@@ -44,6 +44,57 @@ python train.py --gpu 0,1 --batch_size 200
 ```
 You may adjust batch_size based on your # of GPUs. Usually bigger batch size can get higher performance. We provide the log in  `log` folder. You may run several times to get the best results. 
 
+### Server RAF-DB folder format
+
+The server dataset can be used directly with the following layout:
+
+```
+/mnt/data/yanyi2025/cyj/raf-db/
+    train/<class_name>/*.jpg
+    val/<class_name>/*.jpg
+```
+
+The folder-based trainer uses POSTER's model, SAM optimizer, label smoothing,
+and optional inverse-frequency sampling. It uses only physical GPU 0 and
+saves the best validation checkpoint under `poster/result/RAF-DB`.
+
+First make sure the official backbone files are present:
+
+```
+models/pretrain/ir50.pth
+models/pretrain/mobilefacenet_model_best.pth.tar
+```
+
+Then run from the repository root:
+
+```bash
+mkdir -p result/RAF-DB
+
+nohup env CUDA_VISIBLE_DEVICES=0 python train_raf_folder.py \
+    --data-root /mnt/data/yanyi2025/cyj/raf-db \
+    --gpu 0 \
+    --modeltype large \
+    --epochs 300 \
+    --batch-size 16 \
+    --val-batch-size 32 \
+    --workers 4 \
+    --lr 0.00004 \
+    --no-balanced-sampler \
+    --output-dir result/RAF-DB \
+    > result/RAF-DB/train.log 2>&1 </dev/null &
+```
+
+Monitor the run with:
+
+```bash
+tail -f result/RAF-DB/train.log
+```
+
+The script expects seven class folders in both splits and saves
+`best_model.pth`, `metrics.csv`, `metrics.json`, and `class_names.json`.
+Because this folder layout has no separate test split, the reported metric is
+validation accuracy.
+
 
 ## License
 
