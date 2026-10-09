@@ -95,6 +95,46 @@ The script expects seven class folders in both splits and saves
 Because this folder layout has no separate test split, the reported metric is
 validation accuracy.
 
+### Server FER2013 folder format
+
+The FER2013 image dataset can be used directly with the following layout:
+
+```
+/mnt/data/yanyi2025/cyj/fer2013_img/
+    train/<class_name>/*.jpg
+    val/<class_name>/*.jpg
+    test/<class_name>/*.jpg
+```
+
+Run 300 epochs on physical GPU 0 from the repository root:
+
+```bash
+mkdir -p result/fer2013
+
+nohup env CUDA_VISIBLE_DEVICES=0 python train_fer_folder.py \
+    --data-root /mnt/data/yanyi2025/cyj/fer2013_img \
+    --gpu 0 \
+    --modeltype large \
+    --epochs 300 \
+    --batch-size 16 \
+    --val-batch-size 32 \
+    --workers 4 \
+    --lr 0.00004 \
+    --no-balanced-sampler \
+    --output-dir result/fer2013 \
+    > result/fer2013/train.log 2>&1 </dev/null &
+```
+
+Monitor the training log with:
+
+```bash
+tail -f result/fer2013/train.log
+```
+
+The FER2013 trainer selects `best_model.pth` using validation accuracy and
+evaluates that checkpoint on the test split. It saves `metrics.csv`,
+`metrics.json`, and `class_names.json` alongside the checkpoint.
+
 
 ## License
 
