@@ -47,6 +47,12 @@ def parse_args():
     parser.add_argument("--sam-rho", type=float, default=0.05)
     parser.add_argument("--scheduler-gamma", type=float, default=0.98)
     parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="Checkpoint path to resume from, for example result/fer2013/latest_model.pth.",
+    )
+    parser.add_argument(
         "--balanced-sampler",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -161,14 +167,26 @@ def evaluate(model, loader, criterion, device):
     )
 
 
-def save_checkpoint(path, model, optimizer, scheduler, epoch, val_acc, class_names):
+def save_checkpoint(
+    path,
+    model,
+    optimizer,
+    scheduler,
+    epoch,
+    val_acc,
+    class_names,
+    best_val_acc,
+    best_epoch,
+):
     torch.save(
         {
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
-            "best_val_acc": val_acc,
+            "val_acc": val_acc,
+            "best_val_acc": best_val_acc,
+            "best_epoch": best_epoch,
             "class_names": class_names,
             "modeltype": args.modeltype,
         },
@@ -316,8 +334,37 @@ def main():
     history = []
     best_val_acc = -1.0
     best_epoch = 0
+    start_epoch = 1
 
-    for epoch in range(1, args.epochs + 1):
+    if args.resume is not None:
+        resume_path = args.resume.expanduser()
+        if not resume_path.is_absolute():
+            resume_path = REPO_ROOT / resume_path
+        resume_path = resume_path.resolve()
+        if not resume_path.is_file():
+            raise FileNotFoundError(f"Resume checkpoint not found: {resume_path}")
+
+        checkpoint = torch.load(resume_path, map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        if "optimizer_state_dict" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        if "scheduler_state_dict" in checkpoint:
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        start_epoch = int(checkpoint.get("epoch", 0)) + 1
+        best_val_acc = float(checkpoint.get("best_val_acc", -1.0))
+        best_epoch = int(checkpoint.get("best_epoch", checkpoint.get("epoch", 0)))
+        print(
+            f"Resumed from {resume_path} at epoch {start_epoch}. "
+            f"Best val acc so far: {best_val_acc:.4f} at epoch {best_epoch}."
+        )
+
+    if start_epoch > args.epochs:
+        raise ValueError(
+            f"Resume checkpoint is already at epoch {start_epoch - 1}, "
+            f"but --epochs is {args.epochs}."
+        )
+
+    for epoch in range(start_epoch, args.epochs + 1):
         model.train()
         train_loss_sum = 0.0
         train_correct = 0
@@ -385,8 +432,22 @@ def main():
                 epoch,
                 val_acc,
                 class_names,
+                best_val_acc,
+                best_epoch,
             )
             print(f"  Saved best checkpoint (val acc={val_acc:.4f})")
+
+        save_checkpoint(
+            output_dir / "latest_model.pth",
+            model,
+            optimizer,
+            scheduler,
+            epoch,
+            val_acc,
+            class_names,
+            best_val_acc,
+            best_epoch,
+        )
 
     best_checkpoint = torch.load(
         output_dir / "best_model.pth",
