@@ -74,12 +74,15 @@ nohup env CUDA_VISIBLE_DEVICES=0 python train_raf_folder.py \
     --data-root /mnt/data/yanyi2025/cyj/raf-db \
     --gpu 0 \
     --modeltype large \
+    --head-type dual-gate \
     --epochs 300 \
     --batch-size 16 \
     --val-batch-size 32 \
     --workers 4 \
     --lr 0.00004 \
     --no-balanced-sampler \
+    --amp \
+    --tta \
     --output-dir result/RAF-DB \
     > result/RAF-DB/train.log 2>&1 </dev/null &
 ```
@@ -90,10 +93,41 @@ Monitor the run with:
 tail -f result/RAF-DB/train.log
 ```
 
+`--amp` uses BF16 autocast when the GPU supports it and otherwise falls back
+to FP32. `--tta` averages the original and horizontally flipped images during
+validation. The trainer writes `latest_model.pth` after every completed epoch;
+resume an interrupted run with:
+
+```bash
+nohup env CUDA_VISIBLE_DEVICES=0 python -u train_raf_folder.py \
+    --data-root /mnt/data/yanyi2025/cyj/raf-db \
+    --gpu 0 \
+    --modeltype large \
+    --head-type dual-gate \
+    --epochs 300 \
+    --batch-size 16 \
+    --val-batch-size 32 \
+    --workers 4 \
+    --lr 0.00004 \
+    --no-balanced-sampler \
+    --amp \
+    --tta \
+    --resume result/RAF-DB/latest_model.pth \
+    --output-dir result/RAF-DB \
+    > result/RAF-DB/resume.log 2>&1 </dev/null &
+```
+
 The script expects seven class folders in both splits and saves
 `best_model.pth`, `metrics.csv`, `metrics.json`, and `class_names.json`.
 Because this folder layout has no separate test split, the reported metric is
 validation accuracy.
+
+The optional `--head-type dual-gate` experiment attends across the image and
+landmark CLS tokens, then applies a gated MLP classifier. The default
+`--head-type linear` keeps the original POSTER head. Run structural
+comparisons in a separate output directory and evaluate with the matching
+`--head-type`; accuracy improvement is not assumed until measured on the same
+split.
 
 ### Server FER2013 folder format
 
@@ -115,12 +149,15 @@ nohup env CUDA_VISIBLE_DEVICES=0 python train_fer_folder.py \
     --data-root /mnt/data/yanyi2025/cyj/fer2013_img \
     --gpu 0 \
     --modeltype large \
+    --head-type dual-gate \
     --epochs 300 \
     --batch-size 16 \
     --val-batch-size 32 \
     --workers 4 \
     --lr 0.00004 \
     --no-balanced-sampler \
+    --amp \
+    --tta \
     --output-dir result/fer2013 \
     > result/fer2013/train.log 2>&1 </dev/null &
 ```

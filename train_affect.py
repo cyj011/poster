@@ -28,6 +28,7 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=200, help='Batch size.')
     parser.add_argument('--val_batch_size', type=int, default=32, help='Batch size for validation.')
     parser.add_argument('--modeltype', type=str, default='large', help='small or base or large')
+    parser.add_argument('--head_type', type=str, default='linear', choices=['linear', 'dual-gate'])
     parser.add_argument('--optimizer', type=str, default="adam", help='Optimizer, adam or sgd.')
     parser.add_argument('--lr', type=float, default=0.000002, help='Initial learning rate for sgd.')
     parser.add_argument('--momentum', default=0.9, type=float, help='Momentum for sgd')
@@ -67,21 +68,21 @@ def run_training():
         num_classes = 7
         train_dataset = RafDataSet(datapath, train=True, transform=data_transforms, basic_aug=True)
         val_dataset = RafDataSet(datapath, train=False, transform=data_transforms_val)
-        model = pyramid_trans_expr(img_size=224, num_classes=num_classes, type=args.modeltype)
+        model = pyramid_trans_expr(img_size=224, num_classes=num_classes, type=args.modeltype, head_type=args.head_type)
 
     elif args.dataset == "affectnet":
         datapath = './data/AffectNet/'
         num_classes = 7
         train_dataset = Affectdataset(datapath, train=True, transform=data_transforms, basic_aug=True)
         val_dataset = Affectdataset(datapath, train=False, transform=data_transforms_val)
-        model = pyramid_trans_expr(img_size=224, num_classes=num_classes, type=args.modeltype)
+        model = pyramid_trans_expr(img_size=224, num_classes=num_classes, type=args.modeltype, head_type=args.head_type)
 
     elif args.dataset == "affectnet8class":
         datapath = './data/AffectNet/'
         num_classes = 8
         train_dataset = Affectdataset_8class(datapath, train=True, transform=data_transforms, basic_aug=True)
         val_dataset = Affectdataset_8class(datapath, train=False, transform=data_transforms_val)
-        model = pyramid_trans_expr(img_size=224, num_classes=num_classes, type=args.modeltype)
+        model = pyramid_trans_expr(img_size=224, num_classes=num_classes, type=args.modeltype, head_type=args.head_type)
 
     else:
         return print('dataset name is not correct')

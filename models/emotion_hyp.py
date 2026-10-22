@@ -67,11 +67,54 @@ class ClassificationHead(nn.Module):
         x = x.view(x.size(0), -1)
         y_hat = self.linear(x)
         return y_hat
+class DualGateClassificationHead(nn.Module):
+    def __init__(self, input_dim: int, target_dim: int, dropout: float = 0.3):
+        super().__init__()
+        self.gate = nn.Sequential(
+            nn.LayerNorm(input_dim * 2),
+            nn.Linear(input_dim * 2, input_dim),
+            nn.Sigmoid(),
+        )
+        self.stream_attention = nn.MultiheadAttention(
+            embed_dim=input_dim,
+            num_heads=8,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.attention_norm = nn.LayerNorm(input_dim)
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(input_dim),
+            nn.Linear(input_dim, input_dim // 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(input_dim // 2, target_dim),
+        )
+
+    def fuse(self, image_features, landmark_features):
+        stream_tokens = torch.stack((image_features, landmark_features), dim=1)
+        attended_tokens, _ = self.stream_attention(
+            stream_tokens,
+            stream_tokens,
+            stream_tokens,
+            need_weights=False,
+        )
+        attended = self.attention_norm(attended_tokens.mean(dim=1))
+        mean_features = (image_features + landmark_features) * 0.5
+        gate = self.gate(torch.cat((image_features, landmark_features), dim=-1))
+        return gate * attended + (1.0 - gate) * mean_features
+
+    def forward(self, image_features, landmark_features):
+        fused = self.fuse(image_features, landmark_features)
+        return self.classifier(fused), fused
 
 
 class pyramid_trans_expr(nn.Module):
-    def __init__(self, img_size=224, num_classes=7, type="large"):
+    def __init__(self, img_size=224, num_classes=7, type="large", head_type="linear"):
         super().__init__()
+        if head_type not in {"linear", "dual-gate"}:
+            raise ValueError(f"Unsupported head type: {head_type}")
+        self.head_type = head_type
+
         depth = 8
         if type == "small":
             depth = 4
@@ -115,8 +158,25 @@ class pyramid_trans_expr(nn.Module):
                                              drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1)
 
 
-        self.se_block = SE_block(input_dim=512)
-        self.head = ClassificationHead(input_dim=512, target_dim=self.num_classes)
+        if head_type == "linear":
+            self.se_block = SE_block(input_dim=512)
+            self.head = ClassificationHead(input_dim=512, target_dim=self.num_classes)
+        else:
+            self.se_block = SE_block(input_dim=512)
+            self.head = DualGateClassificationHead(
+                input_dim=512,
+                target_dim=self.num_classes,
+            )
+
+    def train(self, mode=True):
+        """Keep the pretrained landmark extractor in inference mode.
+
+        Its weights are frozen, so updating BatchNorm running statistics during
+        classifier training would otherwise change the landmark features.
+        """
+        super().train(mode)
+        self.face_landback.eval()
+        return self
 
 
     def forward(self, x):
@@ -130,11 +190,20 @@ class pyramid_trans_expr(nn.Module):
         x_ir = self.ir_layer(x_ir)
         ###############  image x_ir ([B, 49, 512])
 
-        y_hat = self.pyramid_fuse(x_ir, x_face)
-        y_hat = self.se_block(y_hat)
-        y_feat = y_hat
-        out = self.head(y_hat)
+        if self.head_type == "dual-gate":
+            image_features, landmark_features = self.pyramid_fuse(
+                x_ir,
+                x_face,
+                return_streams=True,
+            )
+            y_feat = self.se_block(
+                self.head.fuse(image_features, landmark_features)
+            )
+            out = self.head.classifier(y_feat)
+        else:
+            y_hat = self.pyramid_fuse(x_ir, x_face)
+            y_hat = self.se_block(y_hat)
+            y_feat = y_hat
+            out = self.head(y_hat)
 
         return out, y_feat
-
-

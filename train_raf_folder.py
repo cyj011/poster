@@ -43,6 +43,12 @@ def parse_args():
         help="Physical GPU id to use. Use 'cpu' to disable CUDA.",
     )
     parser.add_argument("--modeltype", choices=["small", "base", "large"], default="large")
+    parser.add_argument(
+        "--head-type",
+        choices=["linear", "dual-gate"],
+        default="linear",
+        help="Classifier head; dual-gate combines image and landmark CLS features.",
+    )
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--val-batch-size", type=int, default=32)
@@ -55,6 +61,24 @@ def parse_args():
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Use inverse-frequency sampling for RAF-DB's imbalanced classes.",
+    )
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="Checkpoint path to resume from, for example result/RAF-DB/latest_model.pth.",
+    )
+    parser.add_argument(
+        "--amp",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use CUDA automatic mixed precision to reduce memory use and speed up training.",
+    )
+    parser.add_argument(
+        "--tta",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Average original and horizontally flipped images during validation.",
     )
     parser.add_argument(
         "--early-stopping-patience",
@@ -142,7 +166,7 @@ def make_loader(dataset, batch_size, shuffle, workers, pin_memory, sampler=None)
     )
 
 
-def evaluate(model, loader, criterion, device):
+def evaluate(model, loader, criterion, device, tta=False):
     model.eval()
     total_loss = 0.0
     correct = 0
@@ -155,6 +179,9 @@ def evaluate(model, loader, criterion, device):
             images = images.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)
             outputs, _ = model(images)
+            if tta:
+                flipped_outputs, _ = model(torch.flip(images, dims=(3,)))
+                outputs = (outputs + flipped_outputs) * 0.5
             loss = criterion(outputs, targets)
             predicts = outputs.argmax(dim=1)
 
@@ -171,19 +198,37 @@ def evaluate(model, loader, criterion, device):
     )
 
 
-def save_checkpoint(path, model, optimizer, scheduler, epoch, val_acc, class_names):
-    torch.save(
-        {
-            "epoch": epoch,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "scheduler_state_dict": scheduler.state_dict(),
-            "best_val_acc": val_acc,
-            "class_names": class_names,
-            "modeltype": args.modeltype,
-        },
-        path,
-    )
+def save_checkpoint(
+    path,
+    model,
+    optimizer,
+    scheduler,
+    epoch,
+    val_acc,
+    best_val_acc,
+    best_epoch,
+    class_names,
+    history,
+):
+    checkpoint = {
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+        "val_acc": val_acc,
+        "best_val_acc": best_val_acc,
+        "best_epoch": best_epoch,
+        "class_names": class_names,
+        "history": history,
+        "modeltype": args.modeltype,
+        "head_type": args.head_type,
+        "amp": args.amp,
+        "tta": args.tta,
+    }
+    path = Path(path)
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    torch.save(checkpoint, temp_path)
+    os.replace(temp_path, path)
 
 
 def main():
@@ -274,6 +319,7 @@ def main():
         img_size=IMAGE_SIZE,
         num_classes=len(class_names),
         type=args.modeltype,
+        head_type=args.head_type,
     ).to(device)
     base_optimizer = torch.optim.Adam
     optimizer = SAM(
@@ -286,6 +332,13 @@ def main():
     scheduler = torch.optim.lr_scheduler.ExponentialLR(
         optimizer, gamma=args.scheduler_gamma
     )
+    amp_enabled = args.amp and device.type == "cuda"
+    if amp_enabled and (
+        not hasattr(torch.cuda, "is_bf16_supported")
+        or not torch.cuda.is_bf16_supported()
+    ):
+        print("BF16 is unsupported on this GPU; continuing with FP32.")
+        amp_enabled = False
     ce_criterion = torch.nn.CrossEntropyLoss()
     lsce_criterion = LabelSmoothingCrossEntropy(smoothing=0.2)
 
@@ -299,7 +352,9 @@ def main():
     print(f"Classes: {json.dumps(class_names, ensure_ascii=True)}")
     print(f"Samples: train={len(train_dataset)}, val={len(val_dataset)}")
     print(f"Model: POSTER-{args.modeltype}")
+    print(f"Classifier head: {args.head_type}")
     print(f"Batch size: {args.batch_size}, balanced sampler: {args.balanced_sampler}")
+    print(f"AMP: {amp_enabled}, validation TTA: {args.tta}")
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Parameters: {total_params / 1_000_000:.3f}M")
@@ -308,31 +363,79 @@ def main():
     best_val_acc = -1.0
     best_epoch = 0
     stale_epochs = 0
+    start_epoch = 1
 
-    for epoch in range(1, args.epochs + 1):
+    if args.resume is not None:
+        resume_path = args.resume.expanduser()
+        if not resume_path.is_absolute():
+            resume_path = REPO_ROOT / resume_path
+        resume_path = resume_path.resolve()
+        if not resume_path.is_file():
+            raise FileNotFoundError(f"Resume checkpoint not found: {resume_path}")
+
+        checkpoint = torch.load(resume_path, map_location=device)
+        if checkpoint.get("head_type", "linear") != args.head_type:
+            raise ValueError(
+                "Checkpoint head type differs from the requested model: "
+                f"checkpoint={checkpoint.get('head_type', 'linear')}, "
+                f"requested={args.head_type}"
+            )
+        if checkpoint.get("class_names", class_names) != class_names:
+            raise ValueError(
+                "Checkpoint class order differs from the current dataset: "
+                f"checkpoint={checkpoint['class_names']}, current={class_names}"
+            )
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        start_epoch = int(checkpoint.get("epoch", 0)) + 1
+        best_val_acc = float(checkpoint.get("best_val_acc", -1.0))
+        best_epoch = int(checkpoint.get("best_epoch", checkpoint.get("epoch", 0)))
+        history = checkpoint.get("history", [])
+        print(
+            f"Resumed from {resume_path} at epoch {start_epoch}. "
+            f"Best val acc so far: {best_val_acc:.4f} at epoch {best_epoch}."
+        )
+
+    if start_epoch > args.epochs:
+        raise ValueError(
+            f"Resume checkpoint is already at epoch {start_epoch - 1}, "
+            f"but --epochs is {args.epochs}."
+        )
+
+    for epoch in range(start_epoch, args.epochs + 1):
         model.train()
         train_loss_sum = 0.0
         train_correct = 0
         train_total = 0
+        model.face_landback.eval()
 
         for images, targets in train_loader:
             images = images.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)
 
-            optimizer.zero_grad()
-            outputs, _ = model(images)
-            loss = (
-                ce_criterion(outputs, targets)
-                + 2.0 * lsce_criterion(outputs, targets)
-            )
+            optimizer.zero_grad(set_to_none=True)
+            with torch.cuda.amp.autocast(
+                dtype=torch.bfloat16,
+                enabled=amp_enabled,
+            ):
+                outputs, _ = model(images)
+                loss = (
+                    ce_criterion(outputs, targets)
+                    + 2.0 * lsce_criterion(outputs, targets)
+                )
             loss.backward()
             optimizer.first_step(zero_grad=True)
 
-            outputs, _ = model(images)
-            loss = (
-                ce_criterion(outputs, targets)
-                + 2.0 * lsce_criterion(outputs, targets)
-            )
+            with torch.cuda.amp.autocast(
+                dtype=torch.bfloat16,
+                enabled=amp_enabled,
+            ):
+                outputs, _ = model(images)
+                loss = (
+                    ce_criterion(outputs, targets)
+                    + 2.0 * lsce_criterion(outputs, targets)
+                )
             loss.backward()
             optimizer.second_step(zero_grad=True)
 
@@ -343,7 +446,7 @@ def main():
         train_loss = train_loss_sum / train_total
         train_acc = train_correct / train_total
         val_loss, val_acc, val_f1 = evaluate(
-            model, val_loader, ce_criterion, device
+            model, val_loader, ce_criterion, device, tta=args.tta
         )
         scheduler.step()
         current_lr = optimizer.param_groups[0]["lr"]
@@ -379,25 +482,45 @@ def main():
                 scheduler,
                 epoch,
                 val_acc,
+                best_val_acc,
+                best_epoch,
                 class_names,
+                history,
             )
             print(f"  Saved best checkpoint (val acc={val_acc:.4f})")
         else:
             stale_epochs += 1
-            if (
-                args.early_stopping_patience > 0
-                and stale_epochs >= args.early_stopping_patience
-            ):
-                print("Early stopping: validation accuracy did not improve.")
-                break
+
+        save_checkpoint(
+            output_dir / "latest_model.pth",
+            model,
+            optimizer,
+            scheduler,
+            epoch,
+            val_acc,
+            best_val_acc,
+            best_epoch,
+            class_names,
+            history,
+        )
+
+        if (
+            args.early_stopping_patience > 0
+            and stale_epochs >= args.early_stopping_patience
+        ):
+            print("Early stopping: validation accuracy did not improve.")
+            break
 
     metrics = {
         "best_epoch": best_epoch,
         "best_val_accuracy": best_val_acc,
         "class_names": class_names,
         "modeltype": args.modeltype,
+        "head_type": args.head_type,
         "data_root": str(data_root),
         "balanced_sampler": args.balanced_sampler,
+        "amp": amp_enabled,
+        "tta": args.tta,
     }
     pd.DataFrame(history).to_csv(output_dir / "metrics.csv", index=False)
     (output_dir / "metrics.json").write_text(
