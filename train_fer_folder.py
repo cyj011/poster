@@ -41,9 +41,9 @@ def parse_args():
     parser.add_argument("--modeltype", choices=["small", "base", "large"], default="large")
     parser.add_argument(
         "--head-type",
-        choices=["linear", "dual-gate"],
+        choices=["linear", "attention-pool"],
         default="linear",
-        help="Classifier head; dual-gate combines image and landmark CLS features.",
+        help="Classifier head; attention-pool learns weights over fused image and landmark tokens.",
     )
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--batch-size", type=int, default=16)
@@ -427,7 +427,8 @@ def main():
             targets = targets.to(device, non_blocking=True)
 
             optimizer.zero_grad(set_to_none=True)
-            with torch.cuda.amp.autocast(
+            with torch.amp.autocast(
+                "cuda",
                 dtype=torch.bfloat16,
                 enabled=amp_enabled,
             ):
@@ -439,7 +440,8 @@ def main():
             loss.backward()
             optimizer.first_step(zero_grad=True)
 
-            with torch.cuda.amp.autocast(
+            with torch.amp.autocast(
+                "cuda",
                 dtype=torch.bfloat16,
                 enabled=amp_enabled,
             ):

@@ -74,7 +74,7 @@ nohup env CUDA_VISIBLE_DEVICES=0 python train_raf_folder.py \
     --data-root /mnt/data/yanyi2025/cyj/raf-db \
     --gpu 0 \
     --modeltype large \
-    --head-type dual-gate \
+    --head-type attention-pool \
     --epochs 300 \
     --batch-size 16 \
     --val-batch-size 32 \
@@ -103,7 +103,7 @@ nohup env CUDA_VISIBLE_DEVICES=0 python -u train_raf_folder.py \
     --data-root /mnt/data/yanyi2025/cyj/raf-db \
     --gpu 0 \
     --modeltype large \
-    --head-type dual-gate \
+    --head-type attention-pool \
     --epochs 300 \
     --batch-size 16 \
     --val-batch-size 32 \
@@ -122,12 +122,11 @@ The script expects seven class folders in both splits and saves
 Because this folder layout has no separate test split, the reported metric is
 validation accuracy.
 
-The optional `--head-type dual-gate` experiment attends across the image and
-landmark CLS tokens, then applies a gated MLP classifier. The default
-`--head-type linear` keeps the original POSTER head. Run structural
-comparisons in a separate output directory and evaluate with the matching
-`--head-type`; accuracy improvement is not assumed until measured on the same
-split.
+The optional `--head-type attention-pool` experiment learns a weight for each
+fused image and landmark token, pools the full token sequence, and applies an
+MLP classifier. The default `--head-type linear` keeps the original POSTER
+head. Compare both in separate output directories on the same split; accuracy
+improvement is not assumed until measured.
 
 ### Server FER2013 folder format
 
@@ -149,7 +148,7 @@ nohup env CUDA_VISIBLE_DEVICES=0 python train_fer_folder.py \
     --data-root /mnt/data/yanyi2025/cyj/fer2013_img \
     --gpu 0 \
     --modeltype large \
-    --head-type dual-gate \
+    --head-type attention-pool \
     --epochs 300 \
     --batch-size 16 \
     --val-batch-size 32 \
