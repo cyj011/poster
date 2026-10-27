@@ -241,7 +241,7 @@ class HyVisionTransformer(nn.Module):
         # self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
 
 
-    def forward(self, x, x_lm, return_tokens=False):
+    def forward(self, x, x_lm):
         B = x.shape[0]
         x_cls = torch.mean(x, 1).view(B,1,-1)
         # cls_token = self.cls_token.expand(x.shape[0], -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
@@ -263,8 +263,6 @@ class HyVisionTransformer(nn.Module):
         new_x_l = new_x_in[0]
         new_x_l = self.norm(new_x_l)
         x_class1 = new_x_l[:,0,:]
-        if return_tokens:
-            return new_x_l
         return x_class1
 
 

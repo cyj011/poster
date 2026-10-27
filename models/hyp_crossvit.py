@@ -241,7 +241,7 @@ class HyVisionTransformer(nn.Module):
 
 
 
-    def forward(self, x, x_lm, return_tokens=False):
+    def forward(self, x, x_lm):
         B = x.shape[0]
         x_cls = torch.mean(x, 1).view(B,1,-1)
         x = torch.cat((x_cls, x), dim=1)
@@ -262,8 +262,6 @@ class HyVisionTransformer(nn.Module):
         new_x_l = new_x_in[0]
         new_x_l = self.norm(new_x_l)
         x_class1 = new_x_l[:,0,:]
-        if return_tokens:
-            return new_x_l
         return x_class1
 
 

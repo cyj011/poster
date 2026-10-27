@@ -59,46 +59,22 @@ class SE_block(nn.Module):
 
 
 class ClassificationHead(nn.Module):
-    def __init__(self, input_dim: int, target_dim: int):
+    def __init__(self, input_dim: int, target_dim: int, dropout: float = 0.0):
         super().__init__()
+        self.dropout = nn.Dropout(dropout)
         self.linear = torch.nn.Linear(input_dim, target_dim)
 
     def forward(self, x):
         x = x.view(x.size(0), -1)
+        x = self.dropout(x)
         y_hat = self.linear(x)
         return y_hat
-class TokenAttentionClassificationHead(nn.Module):
-    """Pool the most informative image and landmark tokens before classification."""
-
-    def __init__(self, input_dim: int, target_dim: int, dropout: float = 0.3):
-        super().__init__()
-        self.token_score = nn.Sequential(
-            nn.LayerNorm(input_dim),
-            nn.Linear(input_dim, 1),
-        )
-        self.classifier = nn.Sequential(
-            nn.LayerNorm(input_dim),
-            nn.Linear(input_dim, input_dim // 2),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(input_dim // 2, target_dim),
-        )
-
-    def pool(self, tokens):
-        scores = self.token_score(tokens).squeeze(-1)
-        weights = torch.softmax(scores, dim=1)
-        pooled = torch.sum(tokens * weights.unsqueeze(-1), dim=1)
-        return pooled
-
-    def forward(self, tokens):
-        pooled = self.pool(tokens)
-        return self.classifier(pooled), pooled
 
 
 class pyramid_trans_expr(nn.Module):
     def __init__(self, img_size=224, num_classes=7, type="large", head_type="linear"):
         super().__init__()
-        if head_type not in {"linear", "attention-pool"}:
+        if head_type not in {"linear", "dropout"}:
             raise ValueError(f"Unsupported head type: {head_type}")
         self.head_type = head_type
 
@@ -145,15 +121,12 @@ class pyramid_trans_expr(nn.Module):
                                              drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1)
 
 
-        if head_type == "linear":
-            self.se_block = SE_block(input_dim=512)
-            self.head = ClassificationHead(input_dim=512, target_dim=self.num_classes)
-        else:
-            self.se_block = SE_block(input_dim=512)
-            self.head = TokenAttentionClassificationHead(
-                input_dim=512,
-                target_dim=self.num_classes,
-            )
+        self.se_block = SE_block(input_dim=512)
+        self.head = ClassificationHead(
+            input_dim=512,
+            target_dim=self.num_classes,
+            dropout=0.3 if head_type == "dropout" else 0.0,
+        )
 
     def train(self, mode=True):
         """Keep the pretrained landmark extractor in inference mode.
@@ -177,19 +150,9 @@ class pyramid_trans_expr(nn.Module):
         x_ir = self.ir_layer(x_ir)
         ###############  image x_ir ([B, 49, 512])
 
-        if self.head_type == "attention-pool":
-            tokens = self.pyramid_fuse(
-                x_ir,
-                x_face,
-                return_tokens=True,
-            )
-            y_feat = self.head.pool(tokens)
-            y_feat = self.se_block(y_feat)
-            out = self.head.classifier(y_feat)
-        else:
-            y_hat = self.pyramid_fuse(x_ir, x_face)
-            y_hat = self.se_block(y_hat)
-            y_feat = y_hat
-            out = self.head(y_hat)
+        y_hat = self.pyramid_fuse(x_ir, x_face)
+        y_hat = self.se_block(y_hat)
+        y_feat = y_hat
+        out = self.head(y_hat)
 
         return out, y_feat

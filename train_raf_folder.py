@@ -45,9 +45,9 @@ def parse_args():
     parser.add_argument("--modeltype", choices=["small", "base", "large"], default="large")
     parser.add_argument(
         "--head-type",
-        choices=["linear", "attention-pool"],
+        choices=["linear", "dropout"],
         default="linear",
-        help="Classifier head; attention-pool learns weights over fused image and landmark tokens.",
+        help="Classifier head; dropout applies feature dropout before the original linear classifier.",
     )
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--batch-size", type=int, default=16)

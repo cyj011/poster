@@ -28,7 +28,7 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=200, help='Batch size.')
     parser.add_argument('--val_batch_size', type=int, default=32, help='Batch size for validation.')
     parser.add_argument('--modeltype', type=str, default='large', help='small or base or large')
-    parser.add_argument('--head_type', type=str, default='linear', choices=['linear', 'attention-pool'])
+    parser.add_argument('--head_type', type=str, default='linear', choices=['linear', 'dropout'])
     parser.add_argument('--optimizer', type=str, default="adam", help='Optimizer, adam or sgd.')
     parser.add_argument('--lr', type=float, default=0.000002, help='Initial learning rate for sgd.')
     parser.add_argument('--momentum', default=0.9, type=float, help='Momentum for sgd')
