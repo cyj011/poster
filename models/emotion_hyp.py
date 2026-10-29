@@ -59,14 +59,12 @@ class SE_block(nn.Module):
 
 
 class ClassificationHead(nn.Module):
-    def __init__(self, input_dim: int, target_dim: int, dropout: float = 0.0):
+    def __init__(self, input_dim: int, target_dim: int):
         super().__init__()
-        self.dropout = nn.Dropout(dropout)
         self.linear = torch.nn.Linear(input_dim, target_dim)
 
     def forward(self, x):
         x = x.view(x.size(0), -1)
-        x = self.dropout(x)
         y_hat = self.linear(x)
         return y_hat
 
@@ -74,7 +72,7 @@ class ClassificationHead(nn.Module):
 class pyramid_trans_expr(nn.Module):
     def __init__(self, img_size=224, num_classes=7, type="large", head_type="linear"):
         super().__init__()
-        if head_type not in {"linear", "dropout"}:
+        if head_type != "linear":
             raise ValueError(f"Unsupported head type: {head_type}")
         self.head_type = head_type
 
@@ -122,11 +120,7 @@ class pyramid_trans_expr(nn.Module):
 
 
         self.se_block = SE_block(input_dim=512)
-        self.head = ClassificationHead(
-            input_dim=512,
-            target_dim=self.num_classes,
-            dropout=0.3 if head_type == "dropout" else 0.0,
-        )
+        self.head = ClassificationHead(input_dim=512, target_dim=self.num_classes)
 
     def train(self, mode=True):
         """Keep the pretrained landmark extractor in inference mode.

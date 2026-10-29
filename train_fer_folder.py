@@ -41,9 +41,9 @@ def parse_args():
     parser.add_argument("--modeltype", choices=["small", "base", "large"], default="large")
     parser.add_argument(
         "--head-type",
-        choices=["linear", "dropout"],
+        choices=["linear"],
         default="linear",
-        help="Classifier head; dropout applies feature dropout before the original linear classifier.",
+        help="Classifier head; linear preserves the original POSTER classifier.",
     )
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--batch-size", type=int, default=16)
@@ -395,7 +395,25 @@ def main():
                 "Checkpoint class order differs from the current dataset: "
                 f"checkpoint={checkpoint['class_names']}, current={class_names}"
             )
-        model.load_state_dict(checkpoint["model_state_dict"])
+        missing_keys, unexpected_keys = model.load_state_dict(
+            checkpoint["model_state_dict"],
+            strict=False,
+        )
+        allowed_missing = {
+            key
+            for key in missing_keys
+            if key.endswith("gamma_img") or key.endswith("gamma_lm")
+        }
+        if set(missing_keys) != allowed_missing or unexpected_keys:
+            raise RuntimeError(
+                "Checkpoint model weights do not match the current model. "
+                f"missing={missing_keys}, unexpected={unexpected_keys}"
+            )
+        if allowed_missing:
+            print(
+                "Initialized new LayerScale parameters from defaults: "
+                f"{sorted(allowed_missing)}"
+            )
         if "optimizer_state_dict" in checkpoint:
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         if "scheduler_state_dict" in checkpoint:

@@ -74,7 +74,7 @@ nohup env CUDA_VISIBLE_DEVICES=0 python train_raf_folder.py \
     --data-root /mnt/data/yanyi2025/cyj/raf-db \
     --gpu 0 \
     --modeltype large \
-    --head-type dropout \
+    --head-type linear \
     --epochs 300 \
     --batch-size 16 \
     --val-batch-size 32 \
@@ -103,7 +103,7 @@ nohup env CUDA_VISIBLE_DEVICES=0 python -u train_raf_folder.py \
     --data-root /mnt/data/yanyi2025/cyj/raf-db \
     --gpu 0 \
     --modeltype large \
-    --head-type dropout \
+    --head-type linear \
     --epochs 300 \
     --batch-size 16 \
     --val-batch-size 32 \
@@ -122,10 +122,9 @@ The script expects seven class folders in both splits and saves
 Because this folder layout has no separate test split, the reported metric is
 validation accuracy.
 
-The optional `--head-type dropout` experiment keeps the original POSTER
-architecture and applies dropout to the fused feature immediately before its
-linear classifier. The default `--head-type linear` disables this dropout.
-Compare both with the same batch size, AMP, TTA, seed, and data split.
+The `--head-type linear` option uses POSTER's original classifier. Comparisons
+with experimental variants should use the same batch size, AMP, TTA, seed, and
+data split.
 
 ### Server FER2013 folder format
 
@@ -147,7 +146,7 @@ nohup env CUDA_VISIBLE_DEVICES=0 python train_fer_folder.py \
     --data-root /mnt/data/yanyi2025/cyj/fer2013_img \
     --gpu 0 \
     --modeltype large \
-    --head-type dropout \
+    --head-type linear \
     --epochs 300 \
     --batch-size 16 \
     --val-batch-size 32 \
