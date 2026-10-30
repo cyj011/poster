@@ -67,10 +67,30 @@ class ClassificationHead(nn.Module):
         return y_hat
 
 
+class CosFaceClassificationHead(nn.Module):
+    """CosFace head with an angular margin during training only."""
+
+    def __init__(self, input_dim: int, target_dim: int, scale: float = 30.0, margin: float = 0.20):
+        super().__init__()
+        self.weight = nn.Parameter(torch.empty(target_dim, input_dim))
+        nn.init.xavier_uniform_(self.weight)
+        self.scale = scale
+        self.margin = margin
+
+    def forward(self, x, targets=None):
+        x = F.normalize(x.view(x.size(0), -1), dim=1)
+        weight = F.normalize(self.weight, dim=1)
+        cosine = F.linear(x, weight)
+        if targets is not None:
+            cosine = cosine.clone()
+            cosine[torch.arange(x.size(0), device=x.device), targets] -= self.margin
+        return cosine * self.scale
+
+
 class pyramid_trans_expr(nn.Module):
     def __init__(self, img_size=224, num_classes=7, type="large", head_type="linear"):
         super().__init__()
-        if head_type != "linear":
+        if head_type not in {"linear", "cosface"}:
             raise ValueError(f"Unsupported head type: {head_type}")
         self.head_type = head_type
         depth = 8
@@ -107,7 +127,13 @@ class pyramid_trans_expr(nn.Module):
                                              drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1)
 
         self.se_block = SE_block(input_dim=512)
-        self.head = ClassificationHead(input_dim=512, target_dim=self.num_classes)
+        if head_type == "cosface":
+            self.head = CosFaceClassificationHead(
+                input_dim=512,
+                target_dim=self.num_classes,
+            )
+        else:
+            self.head = ClassificationHead(input_dim=512, target_dim=self.num_classes)
 
     def train(self, mode=True):
         super().train(mode)
@@ -115,7 +141,7 @@ class pyramid_trans_expr(nn.Module):
         return self
 
 
-    def forward(self, x):
+    def forward(self, x, targets=None):
         B_ = x.shape[0]
         x_face = F.interpolate(x, size=112)
         _, x_face = self.face_landback(x_face)
@@ -129,7 +155,7 @@ class pyramid_trans_expr(nn.Module):
         y_hat = self.pyramid_fuse(x_ir, x_face)
         y_hat = self.se_block(y_hat)
         y_feat = y_hat
-        out = self.head(y_hat)
+        out = self.head(y_hat, targets) if self.head_type == "cosface" else self.head(y_hat)
 
         return out, y_feat
 

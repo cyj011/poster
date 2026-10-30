@@ -45,7 +45,7 @@ def parse_args():
     parser.add_argument("--modeltype", choices=["small", "base", "large"], default="large")
     parser.add_argument(
         "--head-type",
-        choices=["linear"],
+        choices=["linear", "cosface"],
         default="linear",
         help="Classifier head; linear preserves the original POSTER classifier.",
     )
@@ -385,25 +385,7 @@ def main():
                 "Checkpoint class order differs from the current dataset: "
                 f"checkpoint={checkpoint['class_names']}, current={class_names}"
             )
-        missing_keys, unexpected_keys = model.load_state_dict(
-            checkpoint["model_state_dict"],
-            strict=False,
-        )
-        allowed_missing = {
-            key
-            for key in missing_keys
-            if key.endswith("gamma_img") or key.endswith("gamma_lm")
-        }
-        if set(missing_keys) != allowed_missing or unexpected_keys:
-            raise RuntimeError(
-                "Checkpoint model weights do not match the current model. "
-                f"missing={missing_keys}, unexpected={unexpected_keys}"
-            )
-        if allowed_missing:
-            print(
-                "Initialized new LayerScale parameters from defaults: "
-                f"{sorted(allowed_missing)}"
-            )
+        model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         start_epoch = int(checkpoint.get("epoch", 0)) + 1
@@ -438,7 +420,7 @@ def main():
                 dtype=torch.bfloat16,
                 enabled=amp_enabled,
             ):
-                outputs, _ = model(images)
+                outputs, _ = model(images, targets)
                 loss = (
                     ce_criterion(outputs, targets)
                     + 2.0 * lsce_criterion(outputs, targets)
@@ -451,7 +433,7 @@ def main():
                 dtype=torch.bfloat16,
                 enabled=amp_enabled,
             ):
-                outputs, _ = model(images)
+                outputs, _ = model(images, targets)
                 loss = (
                     ce_criterion(outputs, targets)
                     + 2.0 * lsce_criterion(outputs, targets)

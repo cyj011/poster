@@ -26,7 +26,7 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=200, help='Batch size.')
     parser.add_argument('--val_batch_size', type=int, default=32, help='Batch size for validation.')
     parser.add_argument('--modeltype', type=str, default='large', help='small or base or large')
-    parser.add_argument('--head_type', type=str, default='linear', choices=['linear'])
+    parser.add_argument('--head_type', type=str, default='linear', choices=['linear', 'cosface'])
     parser.add_argument('--optimizer', type=str, default="adam", help='Optimizer, adam or sgd.')
     parser.add_argument('--lr', type=float, default=0.00004, help='Initial learning rate for sgd.')
     parser.add_argument('--momentum', default=0.9, type=float, help='Momentum for sgd')
@@ -153,8 +153,8 @@ def run_training():
             iter_cnt += 1
             optimizer.zero_grad()
             imgs = imgs.cuda()
-            outputs, features = model(imgs)
             targets = targets.cuda()
+            outputs, features = model(imgs, targets) if args.head_type == 'cosface' else model(imgs)
 
             CE_loss = CE_criterion(outputs, targets)
             lsce_loss = lsce_criterion(outputs, targets)
@@ -163,7 +163,7 @@ def run_training():
             optimizer.first_step(zero_grad=True)
 
             # second forward-backward pass
-            outputs, features = model(imgs)
+            outputs, features = model(imgs, targets) if args.head_type == 'cosface' else model(imgs)
             CE_loss = CE_criterion(outputs, targets)
             lsce_loss = lsce_criterion(outputs, targets)
 

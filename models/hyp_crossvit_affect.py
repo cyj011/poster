@@ -139,8 +139,6 @@ class Block(nn.Module):
                               attn_drop=attn_drop, proj_drop=drop)
         self.attn_lm = Attention_lm(dim, in_chans=in_chans, q_chanel=q_chanel, num_heads=num_heads, qkv_bias=qkv_bias,
                                   attn_drop=attn_drop, proj_drop=drop)
-        self.gamma_img = nn.Parameter(1e-2 * torch.ones(dim))
-        self.gamma_lm = nn.Parameter(1e-2 * torch.ones(dim))
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
@@ -154,14 +152,10 @@ class Block(nn.Module):
     def forward(self, x):
         x_img = x[:,:self.img_chanel, :]
         x_lm = x[:,self.img_chanel:, :]
-        x_img = x_img + self.drop_path(
-            self.gamma_img * self.attn_img(self.norm1(x))
-        )
+        x_img = x_img + self.drop_path(self.attn_img(self.norm1(x)))
         x_img = x_img + self.drop_path(self.mlp1(self.norm2(x_img)))
 
-        x_lm = x_lm + self.drop_path(
-            self.gamma_lm * self.attn_lm(self.norm3(x))
-        )
+        x_lm = x_lm + self.drop_path(self.attn_lm(self.norm3(x)))
         x_lm = x_lm + self.drop_path(self.mlp2(self.norm4(x_lm)))
         x = torch.cat((x_img, x_lm), dim=1)
         return x
