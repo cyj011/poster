@@ -90,11 +90,19 @@ class CosFaceClassificationHead(nn.Module):
 
 
 class pyramid_trans_expr(nn.Module):
-    def __init__(self, img_size=224, num_classes=7, type="large", head_type="linear"):
+    def __init__(
+        self,
+        img_size=224,
+        num_classes=7,
+        type="large",
+        head_type="linear",
+        landmark_adapt=False,
+    ):
         super().__init__()
         if head_type not in {"linear", "cosface"}:
             raise ValueError(f"Unsupported head type: {head_type}")
         self.head_type = head_type
+        self.landmark_adapt = landmark_adapt
 
         depth = 8
         if type == "small":
@@ -118,6 +126,10 @@ class pyramid_trans_expr(nn.Module):
 
         for param in self.face_landback.parameters():
             param.requires_grad = False
+        if landmark_adapt:
+            for module in (self.face_landback.conv_5, self.face_landback.conv_6_sep):
+                for param in module.parameters():
+                    param.requires_grad = True
 
         ###########################################################################333
 
@@ -157,6 +169,16 @@ class pyramid_trans_expr(nn.Module):
         super().train(mode)
         self.face_landback.eval()
         return self
+
+    def landmark_trainable_parameters(self):
+        if not self.landmark_adapt:
+            return []
+        return [
+            parameter
+            for module in (self.face_landback.conv_5, self.face_landback.conv_6_sep)
+            for parameter in module.parameters()
+            if parameter.requires_grad
+        ]
 
 
     def forward(self, x, targets=None):

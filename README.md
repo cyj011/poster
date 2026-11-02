@@ -74,7 +74,9 @@ nohup env CUDA_VISIBLE_DEVICES=0 python train_raf_folder.py \
     --data-root /mnt/data/yanyi2025/cyj/raf-db \
     --gpu 0 \
     --modeltype large \
-    --head-type cosface \
+    --head-type linear \
+    --landmark-adapt \
+    --landmark-lr-scale 0.1 \
     --epochs 300 \
     --batch-size 16 \
     --val-batch-size 32 \
@@ -103,7 +105,9 @@ nohup env CUDA_VISIBLE_DEVICES=0 python -u train_raf_folder.py \
     --data-root /mnt/data/yanyi2025/cyj/raf-db \
     --gpu 0 \
     --modeltype large \
-    --head-type cosface \
+    --head-type linear \
+    --landmark-adapt \
+    --landmark-lr-scale 0.1 \
     --epochs 300 \
     --batch-size 16 \
     --val-batch-size 32 \
@@ -122,10 +126,10 @@ The script expects seven class folders in both splits and saves
 Because this folder layout has no separate test split, the reported metric is
 validation accuracy.
 
-The optional `--head-type cosface` uses a cosine classifier with a target-class
-margin during training; inference uses cosine logits without the margin. The
-default `--head-type linear` preserves the original POSTER classifier. Compare
-both with the same batch size, AMP, TTA, seed, and data split.
+The optional `--landmark-adapt` unfreezes only MobileFaceNet's final feature
+stages (`conv_5` and `conv_6_sep`) and trains them with a smaller learning
+rate. The default keeps the landmark backbone fully frozen. Compare both with
+the same batch size, AMP, TTA, seed, and data split.
 
 ### Server FER2013 folder format
 
@@ -147,7 +151,9 @@ nohup env CUDA_VISIBLE_DEVICES=0 python train_fer_folder.py \
     --data-root /mnt/data/yanyi2025/cyj/fer2013_img \
     --gpu 0 \
     --modeltype large \
-    --head-type cosface \
+    --head-type linear \
+    --landmark-adapt \
+    --landmark-lr-scale 0.1 \
     --epochs 300 \
     --batch-size 16 \
     --val-batch-size 32 \

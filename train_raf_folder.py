@@ -49,6 +49,18 @@ def parse_args():
         default="linear",
         help="Classifier head; linear preserves the original POSTER classifier.",
     )
+    parser.add_argument(
+        "--landmark-adapt",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Unfreeze MobileFaceNet conv_5 and conv_6_sep for RAF-DB adaptation.",
+    )
+    parser.add_argument(
+        "--landmark-lr-scale",
+        type=float,
+        default=0.1,
+        help="Learning-rate multiplier for the trainable landmark stages.",
+    )
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--val-batch-size", type=int, default=32)
@@ -222,6 +234,8 @@ def save_checkpoint(
         "history": history,
         "modeltype": args.modeltype,
         "head_type": args.head_type,
+        "landmark_adapt": args.landmark_adapt,
+        "landmark_lr_scale": args.landmark_lr_scale,
         "amp": args.amp,
         "tta": args.tta,
     }
@@ -320,10 +334,28 @@ def main():
         num_classes=len(class_names),
         type=args.modeltype,
         head_type=args.head_type,
+        landmark_adapt=args.landmark_adapt,
     ).to(device)
     base_optimizer = torch.optim.Adam
+    landmark_parameters = model.landmark_trainable_parameters()
+    landmark_parameter_ids = {id(parameter) for parameter in landmark_parameters}
+    main_parameters = [
+        parameter
+        for parameter in model.parameters()
+        if parameter.requires_grad and id(parameter) not in landmark_parameter_ids
+    ]
+    if landmark_parameters:
+        optimizer_parameters = [
+            {"params": main_parameters, "lr": args.lr},
+            {
+                "params": landmark_parameters,
+                "lr": args.lr * args.landmark_lr_scale,
+            },
+        ]
+    else:
+        optimizer_parameters = main_parameters
     optimizer = SAM(
-        model.parameters(),
+        optimizer_parameters,
         base_optimizer,
         lr=args.lr,
         rho=args.sam_rho,
@@ -353,6 +385,10 @@ def main():
     print(f"Samples: train={len(train_dataset)}, val={len(val_dataset)}")
     print(f"Model: POSTER-{args.modeltype}")
     print(f"Classifier head: {args.head_type}")
+    print(
+        f"Landmark adaptation: {args.landmark_adapt} "
+        f"(lr scale={args.landmark_lr_scale})"
+    )
     print(f"Batch size: {args.batch_size}, balanced sampler: {args.balanced_sampler}")
     print(f"AMP: {amp_enabled}, validation TTA: {args.tta}")
 
@@ -379,6 +415,12 @@ def main():
                 "Checkpoint head type differs from the requested model: "
                 f"checkpoint={checkpoint.get('head_type', 'linear')}, "
                 f"requested={args.head_type}"
+            )
+        if checkpoint.get("landmark_adapt", False) != args.landmark_adapt:
+            raise ValueError(
+                "Checkpoint landmark adaptation setting differs from the "
+                f"requested model: checkpoint={checkpoint.get('landmark_adapt', False)}, "
+                f"requested={args.landmark_adapt}"
             )
         if checkpoint.get("class_names", class_names) != class_names:
             raise ValueError(
@@ -519,6 +561,8 @@ def main():
         "class_names": class_names,
         "modeltype": args.modeltype,
         "head_type": args.head_type,
+        "landmark_adapt": args.landmark_adapt,
+        "landmark_lr_scale": args.landmark_lr_scale,
         "data_root": str(data_root),
         "balanced_sampler": args.balanced_sampler,
         "amp": amp_enabled,
