@@ -50,10 +50,10 @@ def parse_args():
         help="Classifier head; linear preserves the original POSTER classifier.",
     )
     parser.add_argument(
-        "--fusion-type",
-        choices=["original", "gated"],
+        "--readout-type",
+        choices=["original", "multiscale"],
         default="original",
-        help="Cross-modal fusion; gated adds adaptive image/landmark residual fusion.",
+        help="Feature readout; multiscale aggregates all three Pyramid Transformer scales.",
     )
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--batch-size", type=int, default=16)
@@ -228,7 +228,7 @@ def save_checkpoint(
         "history": history,
         "modeltype": args.modeltype,
         "head_type": args.head_type,
-        "fusion_type": args.fusion_type,
+        "readout_type": args.readout_type,
         "amp": args.amp,
         "tta": args.tta,
     }
@@ -327,7 +327,7 @@ def main():
         num_classes=len(class_names),
         type=args.modeltype,
         head_type=args.head_type,
-        fusion_type=args.fusion_type,
+        readout_type=args.readout_type,
     ).to(device)
     base_optimizer = torch.optim.Adam
     optimizer = SAM(
@@ -361,7 +361,7 @@ def main():
     print(f"Samples: train={len(train_dataset)}, val={len(val_dataset)}")
     print(f"Model: POSTER-{args.modeltype}")
     print(f"Classifier head: {args.head_type}")
-    print(f"Cross-modal fusion: {args.fusion_type}")
+    print(f"Feature readout: {args.readout_type}")
     print(f"Batch size: {args.batch_size}, balanced sampler: {args.balanced_sampler}")
     print(f"AMP: {amp_enabled}, validation TTA: {args.tta}")
 
@@ -389,11 +389,11 @@ def main():
                 f"checkpoint={checkpoint.get('head_type', 'linear')}, "
                 f"requested={args.head_type}"
             )
-        if checkpoint.get("fusion_type", "original") != args.fusion_type:
+        if checkpoint.get("readout_type", "original") != args.readout_type:
             raise ValueError(
-                "Checkpoint fusion type differs from the requested model: "
-                f"checkpoint={checkpoint.get('fusion_type', 'original')}, "
-                f"requested={args.fusion_type}"
+                "Checkpoint readout type differs from the requested model: "
+                f"checkpoint={checkpoint.get('readout_type', 'original')}, "
+                f"requested={args.readout_type}"
             )
         if checkpoint.get("class_names", class_names) != class_names:
             raise ValueError(
@@ -534,7 +534,7 @@ def main():
         "class_names": class_names,
         "modeltype": args.modeltype,
         "head_type": args.head_type,
-        "fusion_type": args.fusion_type,
+        "readout_type": args.readout_type,
         "data_root": str(data_root),
         "balanced_sampler": args.balanced_sampler,
         "amp": amp_enabled,

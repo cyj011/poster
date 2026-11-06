@@ -126,9 +126,10 @@ The default configuration keeps the pretrained landmark backbone frozen.
 Comparisons with experimental variants should use the same batch size, AMP,
 TTA, seed, and data split.
 
-The experimental adaptive cross-modal fusion can be enabled with
-`--fusion-type gated`. It learns token-wise image/landmark reliability gates
-before the Pyramid Transformer while initializing as the original model.
+The experimental multi-scale readout can be enabled with
+`--readout-type multiscale`. It combines final CLS features from the fine,
+medium, and coarse Pyramid Transformer branches using zero-initialized
+residual scales, preserving the original readout at initialization.
 
 ### Server FER2013 folder format
 

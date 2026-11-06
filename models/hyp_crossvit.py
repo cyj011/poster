@@ -213,12 +213,13 @@ class HyVisionTransformer(nn.Module):
 
     def __init__(self, in_chans=49, q_chanel = 49, num_classes=1000, embed_dim=512, depth=12,
                  num_heads=8, mlp_ratio=4., qkv_bias=True, distilled=False,
-                 drop_rate=0., attn_drop_rate=0., drop_path_rate=0.,  norm_layer=None,
+                 drop_rate=0., attn_drop_rate=0., drop_path_rate=0., multi_scale_readout=False, norm_layer=None,
                  act_layer=None, weight_init=''):
 
         super().__init__()
         self.num_classes = num_classes
         self.in_chans = in_chans
+        self.multi_scale_readout = multi_scale_readout
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
         norm_layer = norm_layer or partial(nn.LayerNorm, eps=1e-6)
         act_layer = act_layer or nn.GELU
@@ -238,6 +239,13 @@ class HyVisionTransformer(nn.Module):
                 drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, act_layer=act_layer)
             for i in range(depth)])
         self.norm = norm_layer(embed_dim)
+        if multi_scale_readout:
+            self.norm_m = norm_layer(embed_dim // 2)
+            self.norm_s = norm_layer(embed_dim // 4)
+            self.proj_m = nn.Linear(embed_dim // 2, embed_dim, bias=False)
+            self.proj_s = nn.Linear(embed_dim // 4, embed_dim, bias=False)
+            self.scale_m = nn.Parameter(torch.zeros(()))
+            self.scale_s = nn.Parameter(torch.zeros(()))
 
 
 
@@ -262,6 +270,14 @@ class HyVisionTransformer(nn.Module):
         new_x_l = new_x_in[0]
         new_x_l = self.norm(new_x_l)
         x_class1 = new_x_l[:,0,:]
+        if self.multi_scale_readout:
+            x_class_m = self.norm_m(new_x_in[1][:, 0, :])
+            x_class_s = self.norm_s(new_x_in[2][:, 0, :])
+            x_class1 = (
+                x_class1
+                + torch.tanh(self.scale_m) * self.proj_m(x_class_m)
+                + torch.tanh(self.scale_s) * self.proj_s(x_class_s)
+            )
         return x_class1
 
 

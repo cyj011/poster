@@ -67,28 +67,6 @@ class ClassificationHead(nn.Module):
         return y_hat
 
 
-class GatedCrossModalFusion(nn.Module):
-    """Learn token-wise reliability weights for image and landmark features."""
-
-    def __init__(self, input_dim: int):
-        super().__init__()
-        self.gate = nn.Sequential(
-            nn.LayerNorm(input_dim * 2),
-            nn.Linear(input_dim * 2, input_dim),
-            nn.Sigmoid(),
-        )
-        # Start exactly at the original two-stream model and learn the residual.
-        self.residual_scale = nn.Parameter(torch.zeros(()))
-
-    def forward(self, x_img, x_lm):
-        gate = self.gate(torch.cat((x_img, x_lm), dim=-1))
-        scale = torch.tanh(self.residual_scale)
-        return (
-            x_img + scale * gate * x_lm,
-            x_lm + scale * (1.0 - gate) * x_img,
-        )
-
-
 class CosFaceClassificationHead(nn.Module):
     """CosFace head with an angular margin during training only."""
 
@@ -116,15 +94,15 @@ class pyramid_trans_expr(nn.Module):
         num_classes=7,
         type="large",
         head_type="linear",
-        fusion_type="original",
+        readout_type="original",
     ):
         super().__init__()
         if head_type not in {"linear", "cosface"}:
             raise ValueError(f"Unsupported head type: {head_type}")
-        if fusion_type not in {"original", "gated"}:
-            raise ValueError(f"Unsupported fusion type: {fusion_type}")
+        if readout_type not in {"original", "multiscale"}:
+            raise ValueError(f"Unsupported readout type: {readout_type}")
         self.head_type = head_type
-        self.fusion_type = fusion_type
+        self.readout_type = readout_type
         depth = 8
         if type == "small":
             depth = 4
@@ -152,17 +130,12 @@ class pyramid_trans_expr(nn.Module):
 
         self.ir_layer = nn.Linear(1024,512)
 
-        self.cross_modal_fusion = (
-            GatedCrossModalFusion(input_dim=512)
-            if fusion_type == "gated"
-            else nn.Identity()
-        )
-
 
         #############################################################3
         self.pyramid_fuse = HyVisionTransformer(in_chans=49, q_chanel = 49, embed_dim=512,
                                              depth=depth, num_heads=8, mlp_ratio=2.,
-                                             drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1)
+                                             drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
+                                             multi_scale_readout=readout_type == "multiscale")
 
         self.se_block = SE_block(input_dim=512)
         if head_type == "cosface":
@@ -188,9 +161,6 @@ class pyramid_trans_expr(nn.Module):
         x_ir = self.ir_back(x)
         x_ir = self.ir_layer(x_ir)
         ###############  image x_ir ([B, 49, 512])
-
-        if self.fusion_type == "gated":
-            x_ir, x_face = self.cross_modal_fusion(x_ir, x_face)
 
         y_hat = self.pyramid_fuse(x_ir, x_face)
         y_hat = self.se_block(y_hat)
