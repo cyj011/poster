@@ -101,7 +101,7 @@ class pyramid_trans_expr(nn.Module):
         super().__init__()
         if head_type not in {"linear", "cosface"}:
             raise ValueError(f"Unsupported head type: {head_type}")
-        if readout_type not in {"original", "multiscale"}:
+        if readout_type not in {"original", "local"}:
             raise ValueError(f"Unsupported readout type: {readout_type}")
         self.head_type = head_type
         self.readout_type = readout_type
@@ -147,7 +147,7 @@ class pyramid_trans_expr(nn.Module):
         self.pyramid_fuse = HyVisionTransformer(in_chans=49, q_chanel = 49, embed_dim=512,
                                              depth=depth, num_heads=8, mlp_ratio=2.,
                                              drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
-                                             multi_scale_readout=readout_type == "multiscale")
+                                             local_token_readout=readout_type == "local")
 
 
         self.se_block = SE_block(input_dim=512)

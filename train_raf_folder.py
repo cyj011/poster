@@ -51,9 +51,9 @@ def parse_args():
     )
     parser.add_argument(
         "--readout-type",
-        choices=["original", "multiscale"],
+        choices=["original", "local"],
         default="original",
-        help="Feature readout; multiscale aggregates all three Pyramid Transformer scales.",
+        help="Feature readout; local applies attention pooling to final facial tokens.",
     )
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--batch-size", type=int, default=16)

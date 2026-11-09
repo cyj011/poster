@@ -126,10 +126,10 @@ The default configuration keeps the pretrained landmark backbone frozen.
 Comparisons with experimental variants should use the same batch size, AMP,
 TTA, seed, and data split.
 
-The experimental multi-scale readout can be enabled with
-`--readout-type multiscale`. It combines final CLS features from the fine,
-medium, and coarse Pyramid Transformer branches using zero-initialized
-residual scales, preserving the original readout at initialization.
+The experimental local-token readout can be enabled with
+`--readout-type local`. It uses attention pooling over final facial and
+landmark tokens, then adds the result through a zero-initialized residual
+scale so the original CLS readout is preserved at initialization.
 
 ### Server FER2013 folder format
 
