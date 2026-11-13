@@ -299,9 +299,9 @@ def main():
         )
 
     class_names = train_dataset.classes
-    if len(class_names) != 7:
+    if len(class_names) not in {7, 8}:
         raise ValueError(
-            f"Expected 7 FER2013 emotion classes, found {len(class_names)}: "
+            f"Expected 7 FER2013 or 8 FERPlus emotion classes, found {len(class_names)}: "
             f"{class_names}"
         )
 
