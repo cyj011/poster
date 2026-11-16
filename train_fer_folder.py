@@ -63,6 +63,7 @@ def parse_args():
         default=0.99,
         help="EMA decay for the OTP-NS-style teacher.",
     )
+    parser.add_argument("--view-consistency-weight", type=float, default=0.0)
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--val-batch-size", type=int, default=32)
@@ -122,8 +123,10 @@ from models.emotion_hyp import pyramid_trans_expr
 from torchsampler import ImbalancedDatasetSampler
 from utils import (
     LabelSmoothingCrossEntropy,
+    PairedViewTransform,
     make_ema_teacher,
     otpns_style_loss,
+    symmetric_view_consistency_loss,
     update_ema_teacher,
 )
 
@@ -241,6 +244,7 @@ def save_checkpoint(
         "readout_type": args.readout_type,
         "loss_type": args.loss_type,
         "otpns_ema_decay": args.otpns_ema_decay,
+        "view_consistency_weight": args.view_consistency_weight,
         "teacher_state_dict": teacher_model.state_dict() if teacher_model is not None else None,
         "amp": amp_enabled,
         "tta": tta,
@@ -291,6 +295,8 @@ def main():
         device = torch.device("cuda:0")
 
     train_transform, eval_transform = make_transforms()
+    if args.view_consistency_weight > 0:
+        train_transform = PairedViewTransform(IMAGE_SIZE, IMAGENET_MEAN, IMAGENET_STD)
     train_dataset = datasets.ImageFolder(
         data_root / "train",
         transform=train_transform,
@@ -364,6 +370,10 @@ def main():
     ).to(device)
     if not 0.0 < args.otpns_ema_decay < 1.0:
         raise ValueError("--otpns-ema-decay must be between 0 and 1")
+    if args.view_consistency_weight < 0:
+        raise ValueError("--view-consistency-weight cannot be negative")
+    if args.view_consistency_weight > 0 and args.loss_type != "baseline":
+        raise ValueError("Paired-view consistency currently requires --loss-type baseline")
     teacher_model = (
         make_ema_teacher(model)
         if args.loss_type == "otpns"
@@ -405,6 +415,7 @@ def main():
     print(f"Classifier head: {args.head_type}")
     print(f"Feature readout: {args.readout_type}")
     print(f"Training loss: {args.loss_type}")
+    print(f"Paired-view consistency weight: {args.view_consistency_weight}")
     if teacher_model is not None:
         print(f"OTP-NS-style EMA decay: {args.otpns_ema_decay}")
     print(f"Batch size: {args.batch_size}, balanced sampler: {args.balanced_sampler}")
@@ -476,8 +487,14 @@ def main():
         train_correct = 0
         train_total = 0
 
-        for images, targets in train_loader:
-            images = images.to(device, non_blocking=True)
+        for image_batch, targets in train_loader:
+            if args.view_consistency_weight > 0:
+                images, images_b = image_batch
+                images = images.to(device, non_blocking=True)
+                images_b = images_b.to(device, non_blocking=True)
+            else:
+                images = image_batch.to(device, non_blocking=True)
+                images_b = None
             targets = targets.to(device, non_blocking=True)
 
             teacher_logits = None
@@ -506,6 +523,10 @@ def main():
                     )
                 else:
                     loss = otpns_style_loss(outputs, teacher_logits, targets)
+                if images_b is not None:
+                    outputs_b, _ = model(images_b, targets)
+                    supervised_b = ce_criterion(outputs_b, targets) + 2.0 * lsce_criterion(outputs_b, targets)
+                    loss = 0.5 * (loss + supervised_b) + args.view_consistency_weight * symmetric_view_consistency_loss(outputs, outputs_b)
             loss.backward()
             optimizer.first_step(zero_grad=True)
 
@@ -522,6 +543,10 @@ def main():
                     )
                 else:
                     loss = otpns_style_loss(outputs, teacher_logits, targets)
+                if images_b is not None:
+                    outputs_b, _ = model(images_b, targets)
+                    supervised_b = ce_criterion(outputs_b, targets) + 2.0 * lsce_criterion(outputs_b, targets)
+                    loss = 0.5 * (loss + supervised_b) + args.view_consistency_weight * symmetric_view_consistency_loss(outputs, outputs_b)
             loss.backward()
             optimizer.second_step(zero_grad=True)
 
@@ -529,7 +554,8 @@ def main():
                 update_ema_teacher(teacher_model, model, args.otpns_ema_decay)
 
             train_loss_sum += loss.item() * targets.size(0)
-            train_correct += (outputs.argmax(dim=1) == targets).sum().item()
+            metric_logits = (outputs + outputs_b) * 0.5 if images_b is not None else outputs
+            train_correct += (metric_logits.argmax(dim=1) == targets).sum().item()
             train_total += targets.size(0)
 
         train_loss = train_loss_sum / train_total

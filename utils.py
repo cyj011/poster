@@ -1,10 +1,12 @@
 import torch
 import copy
+import random
 import numpy as np
 from torch import nn, Tensor
 from torch.autograd import Variable
 from torch.nn import functional as F
 from typing import Tuple
+from torchvision import transforms
 
 
 def make_ema_teacher(model: nn.Module) -> nn.Module:
@@ -60,6 +62,44 @@ def otpns_style_loss(
         target_probability * torch.log_softmax(logits.float(), dim=1)
     ).sum(dim=1)
     return (per_sample_loss * sample_weight).sum() / sample_weight.sum().clamp_min(1e-6)
+
+
+class PairedViewTransform:
+    """Create two photometric views while sharing image geometry."""
+
+    def __init__(self, image_size, mean, std):
+        self.to_pil = transforms.ToPILImage()
+        self.resize = transforms.Resize((image_size, image_size))
+        self.view_transform = transforms.Compose([
+            transforms.RandomApply([
+                transforms.ColorJitter(
+                    brightness=0.12,
+                    contrast=0.12,
+                    saturation=0.08,
+                    hue=0.02,
+                )
+            ], p=0.8),
+            transforms.ToTensor(),
+            transforms.Normalize(mean, std),
+            transforms.RandomErasing(scale=(0.02, 0.1)),
+        ])
+
+    def __call__(self, image):
+        image = self.resize(self.to_pil(image))
+        if random.random() < 0.5:
+            image = transforms.functional.hflip(image)
+        return self.view_transform(image), self.view_transform(image)
+
+
+def symmetric_view_consistency_loss(logits_a: Tensor, logits_b: Tensor, temperature: float = 2.0) -> Tensor:
+    """Symmetric KL consistency for predictions from two augmented views."""
+    log_prob_a = F.log_softmax(logits_a.float() / temperature, dim=1)
+    log_prob_b = F.log_softmax(logits_b.float() / temperature, dim=1)
+    prob_a = log_prob_a.exp()
+    prob_b = log_prob_b.exp()
+    kl_ab = F.kl_div(log_prob_a, prob_b, reduction="batchmean")
+    kl_ba = F.kl_div(log_prob_b, prob_a, reduction="batchmean")
+    return 0.5 * (kl_ab + kl_ba) * (temperature ** 2)
 
 def convert_label_to_similarity(normed_feature: Tensor, label: Tensor) -> Tuple[Tensor, Tensor]:
     similarity_matrix = normed_feature @ normed_feature.transpose(1, 0)
