@@ -1,9 +1,65 @@
 import torch
+import copy
 import numpy as np
 from torch import nn, Tensor
 from torch.autograd import Variable
 from torch.nn import functional as F
 from typing import Tuple
+
+
+def make_ema_teacher(model: nn.Module) -> nn.Module:
+    """Create a frozen EMA teacher for sample-wise label reliability."""
+    teacher = copy.deepcopy(model)
+    for parameter in teacher.parameters():
+        parameter.requires_grad_(False)
+    teacher.eval()
+    return teacher
+
+
+@torch.no_grad()
+def update_ema_teacher(teacher: nn.Module, student: nn.Module, decay: float) -> None:
+    """Update parameters with EMA and keep teacher buffers synchronized."""
+    student_state = student.state_dict()
+    teacher_state = teacher.state_dict()
+    for name, teacher_value in teacher_state.items():
+        student_value = student_state[name].detach()
+        if torch.is_floating_point(teacher_value):
+            teacher_value.mul_(decay).add_(student_value, alpha=1.0 - decay)
+        else:
+            teacher_value.copy_(student_value)
+    teacher.load_state_dict(teacher_state)
+
+
+def otpns_style_loss(
+    logits: Tensor,
+    teacher_logits: Tensor,
+    targets: Tensor,
+    min_smoothing: float = 0.05,
+    max_smoothing: float = 0.40,
+    min_weight: float = 0.25,
+) -> Tensor:
+    """Sample-weighted dynamic target loss inspired by OTP-NS.
+
+    Teacher confidence controls both label smoothing and the contribution of
+    each sample. Low-confidence samples receive softer targets and lower loss
+    weight, while the student still receives the original hard-label signal.
+    """
+    with torch.no_grad():
+        teacher_probability = teacher_logits.float().softmax(dim=1)
+        confidence = teacher_probability.max(dim=1).values
+        smoothing = min_smoothing + (max_smoothing - min_smoothing) * (1.0 - confidence)
+        hard_target = torch.zeros_like(teacher_probability)
+        hard_target.scatter_(1, targets.unsqueeze(1), 1.0)
+        target_probability = (
+            (1.0 - smoothing.unsqueeze(1)) * hard_target
+            + smoothing.unsqueeze(1) * teacher_probability
+        )
+        sample_weight = min_weight + (1.0 - min_weight) * confidence
+
+    per_sample_loss = -(
+        target_probability * torch.log_softmax(logits.float(), dim=1)
+    ).sum(dim=1)
+    return (per_sample_loss * sample_weight).sum() / sample_weight.sum().clamp_min(1e-6)
 
 def convert_label_to_similarity(normed_feature: Tensor, label: Tensor) -> Tuple[Tensor, Tensor]:
     similarity_matrix = normed_feature @ normed_feature.transpose(1, 0)

@@ -131,6 +131,11 @@ The experimental local-token readout can be enabled with
 landmark tokens, then adds the result through a zero-initialized residual
 scale so the original CLS readout is preserved at initialization.
 
+An OTP-NS-style sample-aware loss is available with `--loss-type otpns`. It
+uses an EMA teacher to estimate per-sample confidence, reduce the weight of
+uncertain samples, and dynamically smooth their targets. This is an
+implementation inspired by OTP-NS rather than a full teacher-pool reproduction.
+
 ### Server FER2013 folder format
 
 The FER2013 image dataset can be used directly with the following layout:

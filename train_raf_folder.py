@@ -55,6 +55,18 @@ def parse_args():
         default="original",
         help="Feature readout; local applies attention pooling to final facial tokens.",
     )
+    parser.add_argument(
+        "--loss-type",
+        choices=["baseline", "otpns"],
+        default="baseline",
+        help="Training loss; otpns enables EMA-teacher sample weighting and dynamic smoothing.",
+    )
+    parser.add_argument(
+        "--otpns-ema-decay",
+        type=float,
+        default=0.99,
+        help="EMA decay for the OTP-NS-style teacher.",
+    )
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--val-batch-size", type=int, default=32)
@@ -118,7 +130,12 @@ from torchvision import datasets, transforms
 from data_preprocessing.sam import SAM
 from models.emotion_hyp import pyramid_trans_expr
 from torchsampler import ImbalancedDatasetSampler
-from utils import LabelSmoothingCrossEntropy
+from utils import (
+    LabelSmoothingCrossEntropy,
+    make_ema_teacher,
+    otpns_style_loss,
+    update_ema_teacher,
+)
 
 
 IMAGE_SIZE = 224
@@ -215,6 +232,7 @@ def save_checkpoint(
     best_epoch,
     class_names,
     history,
+    teacher_model=None,
 ):
     checkpoint = {
         "epoch": epoch,
@@ -229,6 +247,9 @@ def save_checkpoint(
         "modeltype": args.modeltype,
         "head_type": args.head_type,
         "readout_type": args.readout_type,
+        "loss_type": args.loss_type,
+        "otpns_ema_decay": args.otpns_ema_decay,
+        "teacher_state_dict": teacher_model.state_dict() if teacher_model is not None else None,
         "amp": args.amp,
         "tta": args.tta,
     }
@@ -329,6 +350,13 @@ def main():
         head_type=args.head_type,
         readout_type=args.readout_type,
     ).to(device)
+    if not 0.0 < args.otpns_ema_decay < 1.0:
+        raise ValueError("--otpns-ema-decay must be between 0 and 1")
+    teacher_model = (
+        make_ema_teacher(model)
+        if args.loss_type == "otpns"
+        else None
+    )
     base_optimizer = torch.optim.Adam
     optimizer = SAM(
         model.parameters(),
@@ -362,6 +390,9 @@ def main():
     print(f"Model: POSTER-{args.modeltype}")
     print(f"Classifier head: {args.head_type}")
     print(f"Feature readout: {args.readout_type}")
+    print(f"Training loss: {args.loss_type}")
+    if teacher_model is not None:
+        print(f"OTP-NS-style EMA decay: {args.otpns_ema_decay}")
     print(f"Batch size: {args.batch_size}, balanced sampler: {args.balanced_sampler}")
     print(f"AMP: {amp_enabled}, validation TTA: {args.tta}")
 
@@ -395,12 +426,20 @@ def main():
                 f"checkpoint={checkpoint.get('readout_type', 'original')}, "
                 f"requested={args.readout_type}"
             )
+        if checkpoint.get("loss_type", "baseline") != args.loss_type:
+            raise ValueError(
+                "Checkpoint loss type differs from the requested training: "
+                f"checkpoint={checkpoint.get('loss_type', 'baseline')}, "
+                f"requested={args.loss_type}"
+            )
         if checkpoint.get("class_names", class_names) != class_names:
             raise ValueError(
                 "Checkpoint class order differs from the current dataset: "
                 f"checkpoint={checkpoint['class_names']}, current={class_names}"
             )
         model.load_state_dict(checkpoint["model_state_dict"])
+        if teacher_model is not None and checkpoint.get("teacher_state_dict") is not None:
+            teacher_model.load_state_dict(checkpoint["teacher_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         start_epoch = int(checkpoint.get("epoch", 0)) + 1
@@ -429,6 +468,18 @@ def main():
             images = images.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)
 
+            teacher_logits = None
+            if teacher_model is not None:
+                teacher_model.eval()
+                with torch.no_grad():
+                    with torch.amp.autocast(
+                        "cuda",
+                        dtype=torch.bfloat16,
+                        enabled=amp_enabled,
+                    ):
+                        teacher_logits, _ = teacher_model(images)
+                teacher_logits = teacher_logits.detach()
+
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast(
                 "cuda",
@@ -436,10 +487,13 @@ def main():
                 enabled=amp_enabled,
             ):
                 outputs, _ = model(images, targets)
-                loss = (
-                    ce_criterion(outputs, targets)
-                    + 2.0 * lsce_criterion(outputs, targets)
-                )
+                if teacher_logits is None:
+                    loss = (
+                        ce_criterion(outputs, targets)
+                        + 2.0 * lsce_criterion(outputs, targets)
+                    )
+                else:
+                    loss = otpns_style_loss(outputs, teacher_logits, targets)
             loss.backward()
             optimizer.first_step(zero_grad=True)
 
@@ -449,12 +503,18 @@ def main():
                 enabled=amp_enabled,
             ):
                 outputs, _ = model(images, targets)
-                loss = (
-                    ce_criterion(outputs, targets)
-                    + 2.0 * lsce_criterion(outputs, targets)
-                )
+                if teacher_logits is None:
+                    loss = (
+                        ce_criterion(outputs, targets)
+                        + 2.0 * lsce_criterion(outputs, targets)
+                    )
+                else:
+                    loss = otpns_style_loss(outputs, teacher_logits, targets)
             loss.backward()
             optimizer.second_step(zero_grad=True)
+
+            if teacher_model is not None:
+                update_ema_teacher(teacher_model, model, args.otpns_ema_decay)
 
             train_loss_sum += loss.item() * targets.size(0)
             train_correct += (outputs.argmax(dim=1) == targets).sum().item()
@@ -503,6 +563,7 @@ def main():
                 best_epoch,
                 class_names,
                 history,
+                teacher_model,
             )
             print(f"  Saved best checkpoint (val acc={val_acc:.4f})")
         else:
@@ -519,6 +580,7 @@ def main():
             best_epoch,
             class_names,
             history,
+            teacher_model,
         )
 
         if (
@@ -535,6 +597,8 @@ def main():
         "modeltype": args.modeltype,
         "head_type": args.head_type,
         "readout_type": args.readout_type,
+        "loss_type": args.loss_type,
+        "otpns_ema_decay": args.otpns_ema_decay,
         "data_root": str(data_root),
         "balanced_sampler": args.balanced_sampler,
         "amp": amp_enabled,
