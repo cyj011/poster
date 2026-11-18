@@ -89,6 +89,65 @@ class CosFaceClassificationHead(nn.Module):
         return cosine * self.scale
 
 
+class PartPrototypeHead(nn.Module):
+    """Class-conditioned online prototype memory over spatial tokens."""
+
+    def __init__(self, input_dim: int, num_classes: int, prototypes_per_class: int = 4):
+        super().__init__()
+        self.num_classes = num_classes
+        self.prototypes_per_class = prototypes_per_class
+        self.linear = ClassificationHead(input_dim, num_classes)
+        self.register_buffer("prototypes", torch.zeros(num_classes, prototypes_per_class, input_dim))
+        self.register_buffer("prototype_counts", torch.zeros(num_classes, prototypes_per_class))
+        self.register_buffer("prototype_ready", torch.zeros(num_classes, dtype=torch.bool))
+        self.prototype_weight = 0.25
+        self.prototype_momentum = 0.1
+        self.prototype_scale = 10.0
+
+    def forward(self, pooled_features, part_tokens):
+        logits = self.linear(pooled_features)
+        if not self.prototype_ready.all():
+            return logits
+        tokens = F.normalize(part_tokens.float(), dim=-1)
+        centers = F.normalize(self.prototypes.float(), dim=-1)
+        similarities = torch.einsum("bnd,ckd->bnck", tokens, centers)
+        # Average a few matching locations to avoid relying on one noisy token.
+        part_scores = similarities.topk(min(3, tokens.size(1)), dim=1).values.mean(dim=1).mean(dim=-1)
+        return logits + self.prototype_weight * self.prototype_scale * part_scores
+
+    @torch.no_grad()
+    def update(self, part_tokens, targets):
+        features = F.normalize(part_tokens.detach().float(), dim=-1)
+        for class_id in targets.unique().tolist():
+            class_features = features[targets == class_id].reshape(-1, features.size(-1))
+            if not self.prototype_ready[class_id]:
+                # Deterministic farthest-point initialization spreads the centers.
+                center = class_features[0]
+                nearest_similarity = class_features @ center
+                for proto_id in range(self.prototypes_per_class):
+                    self.prototypes[class_id, proto_id].copy_(center)
+                    nearest_similarity = torch.maximum(
+                        nearest_similarity, class_features @ center
+                    )
+                    center = class_features[nearest_similarity.argmin()]
+                self.prototype_counts[class_id].fill_(1.0)
+                self.prototype_ready[class_id] = True
+                continue
+
+            centers = F.normalize(self.prototypes[class_id].float(), dim=-1)
+            assignments = class_features @ centers.t()
+            assignments = assignments.argmax(dim=1)
+            for proto_id in range(self.prototypes_per_class):
+                selected = class_features[assignments == proto_id]
+                if selected.numel() == 0:
+                    continue
+                center = F.normalize(selected.mean(dim=0), dim=0)
+                self.prototypes[class_id, proto_id].mul_(1.0 - self.prototype_momentum)
+                self.prototypes[class_id, proto_id].add_(center, alpha=self.prototype_momentum)
+                self.prototypes[class_id, proto_id].copy_(F.normalize(self.prototypes[class_id, proto_id], dim=0))
+                self.prototype_counts[class_id, proto_id] += selected.size(0)
+
+
 class pyramid_trans_expr(nn.Module):
     def __init__(
         self,
@@ -99,7 +158,7 @@ class pyramid_trans_expr(nn.Module):
         readout_type="original",
     ):
         super().__init__()
-        if head_type not in {"linear", "cosface"}:
+        if head_type not in {"linear", "cosface", "part-prototype"}:
             raise ValueError(f"Unsupported head type: {head_type}")
         if readout_type not in {"original", "local"}:
             raise ValueError(f"Unsupported readout type: {readout_type}")
@@ -156,6 +215,8 @@ class pyramid_trans_expr(nn.Module):
                 input_dim=512,
                 target_dim=self.num_classes,
             )
+        elif head_type == "part-prototype":
+            self.head = PartPrototypeHead(input_dim=512, num_classes=self.num_classes)
         else:
             self.head = ClassificationHead(input_dim=512, target_dim=self.num_classes)
 
@@ -169,7 +230,7 @@ class pyramid_trans_expr(nn.Module):
         self.face_landback.eval()
         return self
 
-    def forward(self, x, targets=None):
+    def forward(self, x, targets=None, return_parts=False):
         B_ = x.shape[0]
         x_face = F.interpolate(x, size=112)
         _, x_face = self.face_landback(x_face)
@@ -180,9 +241,23 @@ class pyramid_trans_expr(nn.Module):
         x_ir = self.ir_layer(x_ir)
         ###############  image x_ir ([B, 49, 512])
 
-        y_hat = self.pyramid_fuse(x_ir, x_face)
+        need_parts = self.head_type == "part-prototype"
+        fused = self.pyramid_fuse(x_ir, x_face, return_tokens=need_parts)
+        if need_parts:
+            y_hat, part_tokens = fused
+        else:
+            y_hat = fused
         y_hat = self.se_block(y_hat)
         y_feat = y_hat
-        out = self.head(y_hat, targets) if self.head_type == "cosface" else self.head(y_hat)
+        if self.head_type == "cosface":
+            out = self.head(y_hat, targets)
+        elif self.head_type == "part-prototype":
+            out = self.head(y_hat, part_tokens)
+        else:
+            out = self.head(y_hat)
 
+        if return_parts:
+            if not need_parts:
+                raise ValueError("return_parts requires the part-prototype head")
+            return out, y_feat, part_tokens.detach()
         return out, y_feat
