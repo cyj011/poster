@@ -41,15 +41,21 @@ def parse_args():
     parser.add_argument("--modeltype", choices=["small", "base", "large"], default="large")
     parser.add_argument(
         "--head-type",
-        choices=["linear", "cosface", "part-prototype"],
+        choices=["linear", "cosface"],
         default="linear",
-        help="Classifier head; part-prototype adds a non-parametric spatial prototype memory.",
+        help="Classifier head.",
     )
     parser.add_argument(
         "--readout-type",
         choices=["original", "local"],
         default="original",
         help="Feature readout; local applies attention pooling to final facial tokens.",
+    )
+    parser.add_argument(
+        "--spatial-enhancement",
+        choices=["none", "multiscale"],
+        default="none",
+        help="Optional multi-scale dilated-convolution adaptor after pyramid_fuse.",
     )
     parser.add_argument(
         "--loss-type",
@@ -239,6 +245,7 @@ def save_checkpoint(
         "modeltype": args.modeltype,
         "head_type": args.head_type,
         "readout_type": args.readout_type,
+        "spatial_enhancement": args.spatial_enhancement,
         "loss_type": args.loss_type,
         "otpns_ema_decay": args.otpns_ema_decay,
         "teacher_state_dict": teacher_model.state_dict() if teacher_model is not None else None,
@@ -361,6 +368,7 @@ def main():
         type=args.modeltype,
         head_type=args.head_type,
         readout_type=args.readout_type,
+        spatial_enhancement=args.spatial_enhancement,
     ).to(device)
     if not 0.0 < args.otpns_ema_decay < 1.0:
         raise ValueError("--otpns-ema-decay must be between 0 and 1")
@@ -405,8 +413,7 @@ def main():
     print(f"Classifier head: {args.head_type}")
     print(f"Feature readout: {args.readout_type}")
     print(f"Training loss: {args.loss_type}")
-    if args.head_type == "part-prototype":
-        print("Part prototypes: 4 per class, EMA=0.9, residual weight=0.25, scale=10")
+    print(f"Spatial enhancement: {args.spatial_enhancement}")
     if teacher_model is not None:
         print(f"OTP-NS-style EMA decay: {args.otpns_ema_decay}")
     print(f"Batch size: {args.batch_size}, balanced sampler: {args.balanced_sampler}")
@@ -426,8 +433,6 @@ def main():
             raise FileNotFoundError(f"Resume checkpoint not found: {resume_path}")
 
         checkpoint = torch.load(resume_path, map_location=device)
-        if checkpoint.get("view_consistency_weight", 0.0) > 0:
-            raise ValueError("Cannot resume a removed paired-view experiment as single-view training")
         if checkpoint.get("head_type", "linear") != args.head_type:
             raise ValueError(
                 "Checkpoint head type differs from the requested model: "
@@ -439,6 +444,12 @@ def main():
                 "Checkpoint readout type differs from the requested model: "
                 f"checkpoint={checkpoint.get('readout_type', 'original')}, "
                 f"requested={args.readout_type}"
+            )
+        if checkpoint.get("spatial_enhancement", "none") != args.spatial_enhancement:
+            raise ValueError(
+                "Checkpoint spatial enhancement differs from the requested model: "
+                f"checkpoint={checkpoint.get('spatial_enhancement', 'none')}, "
+                f"requested={args.spatial_enhancement}"
             )
         if checkpoint.get("loss_type", "baseline") != args.loss_type:
             raise ValueError(
@@ -502,11 +513,7 @@ def main():
                 dtype=torch.bfloat16,
                 enabled=amp_enabled,
             ):
-                part_tokens = None
-                if args.head_type == "part-prototype":
-                    outputs, _, part_tokens = model(images, targets, return_parts=True)
-                else:
-                    outputs, _ = model(images, targets)
+                outputs, _ = model(images, targets)
                 if teacher_logits is None:
                     loss = (
                         ce_criterion(outputs, targets)
@@ -532,11 +539,6 @@ def main():
                     loss = otpns_style_loss(outputs, teacher_logits, targets)
             loss.backward()
             optimizer.second_step(zero_grad=True)
-
-            if part_tokens is not None:
-                # Update once using unperturbed features, after both SAM passes.
-                with torch.amp.autocast("cuda", enabled=False):
-                    model.head.update(part_tokens, targets)
 
             if teacher_model is not None:
                 update_ema_teacher(teacher_model, model, args.otpns_ema_decay)

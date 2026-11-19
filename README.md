@@ -136,6 +136,32 @@ uses an EMA teacher to estimate per-sample confidence, reduce the weight of
 uncertain samples, and dynamically smooth their targets. This is an
 implementation inspired by OTP-NS rather than a full teacher-pool reproduction.
 
+### Local attention with multi-scale spatial enhancement
+
+Use `--readout-type local --spatial-enhancement multiscale --head-type linear`
+in either folder trainer. This replaces the previous part-prototype experiment.
+The optional adaptor runs after `pyramid_fuse` over its 7x7 image tokens. Three
+depthwise convolution branches use dilation 1, 2, and 3, followed by gated
+multi-scale fusion and a zero-initialized residual projection. This keeps the
+POSTER backbone and classifier unchanged and starts close to the local-attention
+model. It is inspired by lightweight visual adaptors; it is not a reproduction
+of Mamba-Adaptor and does not implement an actual state-space/Mamba layer.
+
+Set batch size to 128 and match AMP, TTA, learning rate, seed and data splits to
+the local-attention baseline. Use a fresh output directory and do not resume a
+part-prototype checkpoint. The adaptor is enabled at inference and its weights
+are saved in the normal model checkpoint.
+
+Suggested output folders: `result/RAF-DB/local-attention-multiscale` and
+`result/FERPLUS/local-attention-multiscale`. Accuracy improvements are not
+guaranteed; compare against local-attention alone.
+
+Run the focused tests without pretrained weight files:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
 ### Server FER2013 folder format
 
 The FER2013 image dataset can be used directly with the following layout:

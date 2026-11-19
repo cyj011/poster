@@ -24,6 +24,8 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size.')
     parser.add_argument('--modeltype', type=str, default='large', help='small or base or large')
     parser.add_argument('--head-type', choices=['linear', 'cosface'], default='linear')
+    parser.add_argument('--readout-type', choices=['original', 'local'], default='original')
+    parser.add_argument('--spatial-enhancement', choices=['none', 'multiscale'], default='none')
     parser.add_argument('--workers', default=2, type=int, help='Number of data loading workers (default: 4)')
     parser.add_argument('--gpu', type=str, default='0', help='assign multi-gpus by comma concat')
     parser.add_argument('-p', '--plot_cm', action="store_true", help="Ploting confusion matrix.")
@@ -45,19 +47,19 @@ def test():
         datapath = './data/raf-basic/'
         num_classes = 7
         test_dataset = RafDataSet(datapath, train=False, transform=data_transforms_test)
-        model = pyramid_trans_expr(img_size=224, num_classes=num_classes, type=args.modeltype, head_type=args.head_type)
+        model = pyramid_trans_expr(img_size=224, num_classes=num_classes, type=args.modeltype, head_type=args.head_type, readout_type=args.readout_type, spatial_enhancement=args.spatial_enhancement)
 
     elif args.dataset == "affectnet":
         datapath = './data/AffectNet/'
         num_classes = 7
         test_dataset = Affectdataset(datapath, train=False, transform=data_transforms_test)
-        model = pyramid_trans_expr(img_size=224, num_classes=num_classes, type=args.modeltype, head_type=args.head_type)
+        model = pyramid_trans_expr(img_size=224, num_classes=num_classes, type=args.modeltype, head_type=args.head_type, readout_type=args.readout_type, spatial_enhancement=args.spatial_enhancement)
 
     elif args.dataset == "affectnet8class":
         datapath = './data/AffectNet/'
         num_classes = 8
         test_dataset = Affectdataset_8class(datapath, train=False, transform=data_transforms_test)
-        model = pyramid_trans_expr(img_size=224, num_classes=num_classes, type=args.modeltype, head_type=args.head_type)
+        model = pyramid_trans_expr(img_size=224, num_classes=num_classes, type=args.modeltype, head_type=args.head_type, readout_type=args.readout_type, spatial_enhancement=args.spatial_enhancement)
 
     else:
         return print('dataset name is not correct')
