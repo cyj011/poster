@@ -146,6 +146,49 @@ CVPR 2026 method or its full discrete diffusion training objective. Keep the
 same optimizer, loss, data splits, batch size, AMP, TTA and seed as the
 local-attention baseline, and use a fresh output directory.
 
+### Local attention with heat-conduction enhancement
+
+Use `--readout-type local --head-type linear --spatial-enhancement hco` to
+apply a DCT-based heat-conduction operator to POSTER's 7x7 fused image tokens.
+The adapter operates after pyramid fusion and normalization but BEFORE local
+attention pooling. Only the 49 image tokens are enhanced; CLS and landmark
+tokens retain their existing paths. Local readout is required for this mode.
+
+The reference is `Heat2D` in the official vHeat repository:
+https://github.com/MzeroMiko/vHeat/blob/main/classification/models/vHeat.py
+The core is orthonormal DCT-II, per-frequency/per-channel heat decay
+`exp(-k * ((pi*u/H)^2 + (pi*v/W)^2))`, inverse DCT, output normalization,
+SiLU gating, and projection. Learnable frequency embeddings predict `k`.
+POSTER-specific choices are a pre-normalization, softplus rather than ReLU
+for positive diffusivity, FP32 spectral calculations under AMP, and a
+per-channel residual scale initialized to 1e-3. No extra FFN is added.
+
+This is an HCO adaptation, not a full vHeat backbone reproduction. The existing
+zero-initialized local-readout scale is unchanged; HCO starts receiving
+classification gradients once that readout becomes active. Shared baseline
+parameters retain their seeded initialization. The optimizer, loss and
+inference protocol are unchanged. Use a fresh directory, not a DiDiCM or
+multi-scale checkpoint, and compare with local-attention alone. Accuracy
+improvements are not guaranteed.
+
+RAF-DB (physical GPU 1, batch size 128; run from the server repository):
+
+```bash
+OUT=/mnt/data/yanyi2025/cyj/otherModels/poster/result/RAF-DB/local-attention-hco
+mkdir -p "$OUT"
+nohup python -u train_raf_folder.py --data-root /mnt/data/yanyi2025/cyj/raf-db --gpu 1 --modeltype large --head-type linear --readout-type local --spatial-enhancement hco --loss-type baseline --epochs 300 --batch-size 128 --val-batch-size 32 --workers 4 --lr 0.00004 --no-balanced-sampler --amp --tta --seed 123 --output-dir "$OUT" > "$OUT/train.log" 2>&1 < /dev/null &
+tail -f "$OUT/train.log"
+```
+
+FERPlus (run separately, or select a different GPU for concurrent training):
+
+```bash
+OUT=/mnt/data/yanyi2025/cyj/otherModels/poster/result/FERPLUS/local-attention-hco
+mkdir -p "$OUT"
+nohup python -u train_fer_folder.py --data-root /mnt/data/yanyi2025/cyj/ferplus/fer_img --gpu 1 --modeltype large --head-type linear --readout-type local --spatial-enhancement hco --loss-type baseline --epochs 300 --batch-size 128 --val-batch-size 32 --workers 4 --lr 0.00004 --no-balanced-sampler --amp --tta --seed 123 --output-dir "$OUT" > "$OUT/train.log" 2>&1 < /dev/null &
+tail -f "$OUT/train.log"
+```
+
 The earlier local-attention multi-scale spatial experiment remains selectable
 with `--spatial-enhancement multiscale` for controlled comparisons.
 

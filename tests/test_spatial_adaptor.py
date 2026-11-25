@@ -8,6 +8,7 @@ from torch.nn import functional as F
 
 from models.emotion_hyp import (
     DiDiCMClassificationHead,
+    HeatConductionOperator,
     MultiScaleSpatialAdaptor,
     pyramid_trans_expr,
 )
@@ -49,6 +50,20 @@ class SpatialAdaptorTests(unittest.TestCase):
         torch.nn.functional.cross_entropy(logits, torch.tensor([0, 1, 2, 3])).backward()
         self.assertTrue(torch.isfinite(features.grad).all())
         self.assertTrue(all(p.grad is not None for p in head.parameters()))
+
+    def test_hco_shape_and_gradients(self):
+        hco = HeatConductionOperator(dim=32, grid_size=7, fve_dim=8)
+        tokens = torch.randn(2, 49, 32, requires_grad=True)
+        output = hco(tokens)
+        self.assertEqual(output.shape, tokens.shape)
+        output.square().mean().backward()
+        self.assertTrue(torch.isfinite(tokens.grad).all())
+        self.assertTrue(all(p.grad is not None for p in hco.parameters()))
+
+    def test_hco_rejects_wrong_grid(self):
+        hco = HeatConductionOperator(dim=32, grid_size=7, fve_dim=8)
+        with self.assertRaisesRegex(ValueError, r"expects \[B, 49, 32\]"):
+            hco(torch.randn(2, 48, 32))
 
     def test_rejects_non_grid_token_count(self):
         adaptor = MultiScaleSpatialAdaptor(input_dim=32)
@@ -106,6 +121,24 @@ class SpatialAdaptorTests(unittest.TestCase):
         logits, features = model(torch.randn(2, 3, 224, 224))
         self.assertEqual(logits.shape, (2, 8))
         self.assertEqual(features.shape, (2, 512))
+
+    def test_poster_stub_interface_with_hco(self):
+        from unittest.mock import patch
+
+        with patch("models.emotion_hyp.MobileFaceNet", return_value=FakeLandmarks()), \
+             patch("models.emotion_hyp.Backbone", return_value=FakeBackbone()), \
+             patch("models.emotion_hyp.torch.load", return_value={"state_dict": {}}):
+            model = pyramid_trans_expr(
+                type="small",
+                num_classes=7,
+                head_type="linear",
+                readout_type="local",
+                spatial_enhancement="hco",
+            )
+        logits, features = model(torch.randn(2, 3, 224, 224))
+        self.assertEqual(logits.shape, (2, 7))
+        self.assertEqual(features.shape, (2, 512))
+        torch.testing.assert_close(model.hco_adapter.scale, torch.full((512,), 1e-3))
 
 
 if __name__ == "__main__":

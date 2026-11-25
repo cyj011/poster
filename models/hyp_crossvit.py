@@ -246,7 +246,9 @@ class HyVisionTransformer(nn.Module):
 
 
 
-    def forward(self, x, x_lm, return_tokens=False):
+    def forward(self, x, x_lm, return_tokens=False, image_token_adapter=None):
+        if image_token_adapter is not None and not self.local_token_readout:
+            raise ValueError("Image token adapters require local-token readout")
         B = x.shape[0]
         x_cls = torch.mean(x, 1).view(B,1,-1)
         x = torch.cat((x_cls, x), dim=1)
@@ -266,6 +268,11 @@ class HyVisionTransformer(nn.Module):
         new_x_in = self.blocks(new_x_in)
         new_x_l = new_x_in[0]
         new_x_l = self.norm(new_x_l)
+        if image_token_adapter is not None:
+            image_tokens = image_token_adapter(new_x_l[:, 1:self.in_chans + 1, :])
+            new_x_l = torch.cat((
+                new_x_l[:, :1, :], image_tokens, new_x_l[:, self.in_chans + 1:, :]
+            ), dim=1)
         x_class1 = new_x_l[:,0,:]
         if self.local_token_readout:
             local_tokens = new_x_l[:, 1:, :]

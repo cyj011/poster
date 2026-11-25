@@ -189,6 +189,110 @@ class MultiScaleSpatialAdaptor(nn.Module):
         return self.out_proj(mixed) * channel_gate
 
 
+class HeatConductionOperator(nn.Module):
+    """DCT-based adaptive heat conduction for a fixed spatial token grid.
+
+    Reference: MzeroMiko/vHeat, classification/models/vHeat.py (Heat2D).
+    Uses channel-wise frequency decay with softplus instead of ReLU,
+    and FP32 spectral math. This is an adapter, not a full vHeat block.
+    """
+
+    def __init__(self, dim: int = 512, grid_size: int = 7, fve_dim=None):
+        super().__init__()
+        fve_dim = dim if fve_dim is None else fve_dim
+        if min(dim, grid_size, fve_dim) < 1:
+            raise ValueError("HCO dimensions must be positive")
+        self.dim = dim
+        self.grid_size = grid_size
+        self.norm = nn.LayerNorm(dim)
+        self.dwconv = nn.Conv2d(dim, dim, kernel_size=3, padding=1, groups=dim)
+        self.in_proj = nn.Linear(dim, dim * 2)
+        self.out_proj = nn.Linear(dim, dim)
+        self.out_norm = nn.LayerNorm(dim)
+
+        self.frequency_embeddings = nn.Parameter(
+            torch.zeros(grid_size, grid_size, fve_dim)
+        )
+        nn.init.trunc_normal_(self.frequency_embeddings, std=0.02)
+        self.diffusivity = nn.Linear(fve_dim, dim)
+        nn.init.trunc_normal_(self.diffusivity.weight, std=0.02)
+        nn.init.constant_(self.diffusivity.bias, -2.0)
+
+        dct = self._make_dct_matrix(grid_size)
+        self.register_buffer("dct_matrix", dct, persistent=False)
+        freq = torch.arange(grid_size, dtype=torch.float32) * torch.pi / grid_size
+        freq_sq = freq.square()
+        self.register_buffer(
+            "frequency_radius_sq",
+            freq_sq[:, None] + freq_sq[None, :],
+            persistent=False,
+        )
+
+    @staticmethod
+    def _make_dct_matrix(size: int) -> torch.Tensor:
+        positions = torch.arange(size, dtype=torch.float32)
+        frequencies = torch.arange(size, dtype=torch.float32)[:, None]
+        matrix = torch.cos(torch.pi * (positions + 0.5) * frequencies / size)
+        matrix[0] *= (1.0 / size) ** 0.5
+        if size > 1:
+            matrix[1:] *= (2.0 / size) ** 0.5
+        return matrix
+
+    def _dct2(self, feature_map: torch.Tensor) -> torch.Tensor:
+        matrix = self.dct_matrix.to(dtype=feature_map.dtype)
+        return torch.matmul(torch.matmul(matrix, feature_map), matrix.t())
+
+    def _idct2(self, frequency_map: torch.Tensor) -> torch.Tensor:
+        matrix = self.dct_matrix.to(dtype=frequency_map.dtype)
+        return torch.matmul(torch.matmul(matrix.t(), frequency_map), matrix)
+
+    def spectral_decay(self):
+        # Non-negative diffusivity prevents amplification of high frequencies.
+        k = F.softplus(F.linear(
+            self.frequency_embeddings.float(),
+            self.diffusivity.weight.float(),
+            self.diffusivity.bias.float(),
+        ))
+        return torch.exp(-k * self.frequency_radius_sq.float().unsqueeze(-1))
+
+    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+        if tokens.ndim != 3:
+            raise ValueError("HeatConductionOperator expects a [B, N, C] tensor")
+        batch_size, token_count, channels = tokens.shape
+        expected = self.grid_size * self.grid_size
+        if token_count != expected or channels != self.dim:
+            raise ValueError(
+                f"HeatConductionOperator expects [B, {expected}, {self.dim}], "
+                f"got {tuple(tokens.shape)}"
+            )
+
+        normalized = self.norm(tokens)
+        feature_map = normalized.transpose(1, 2).reshape(
+            batch_size, channels, self.grid_size, self.grid_size
+        )
+        feature_map = self.dwconv(feature_map).permute(0, 2, 3, 1)
+        content, gate = self.in_proj(feature_map).chunk(2, dim=-1)
+
+        # Keep the small DCT and exponential in FP32 under CPU/CUDA AMP.
+        with torch.autocast(device_type=tokens.device.type, enabled=False):
+            frequency = self._dct2(content.float().permute(0, 3, 1, 2))
+            decay = self.spectral_decay().permute(2, 0, 1).unsqueeze(0)
+            conducted = self._idct2(frequency * decay)
+        conducted = conducted.permute(0, 2, 3, 1).to(content.dtype)
+        output = self.out_proj(self.out_norm(conducted) * F.silu(gate))
+        return output.reshape(batch_size, expected, channels)
+
+
+class ResidualHeatConduction(nn.Module):
+    def __init__(self, dim=512, grid_size=7):
+        super().__init__()
+        self.op = HeatConductionOperator(dim=dim, grid_size=grid_size)
+        self.scale = nn.Parameter(torch.full((dim,), 1e-3))
+
+    def forward(self, tokens):
+        return tokens + self.scale * self.op(tokens)
+
+
 class pyramid_trans_expr(nn.Module):
     def __init__(
         self,
@@ -204,8 +308,10 @@ class pyramid_trans_expr(nn.Module):
             raise ValueError(f"Unsupported head type: {head_type}")
         if readout_type not in {"original", "local"}:
             raise ValueError(f"Unsupported readout type: {readout_type}")
-        if spatial_enhancement not in {"none", "multiscale"}:
+        if spatial_enhancement not in {"none", "multiscale", "hco"}:
             raise ValueError(f"Unsupported spatial enhancement: {spatial_enhancement}")
+        if spatial_enhancement == "hco" and readout_type != "local":
+            raise ValueError("HCO requires --readout-type local to read enhanced image tokens")
         self.head_type = head_type
         self.readout_type = readout_type
         self.spatial_enhancement = spatial_enhancement
@@ -273,6 +379,10 @@ class pyramid_trans_expr(nn.Module):
         else:
             self.head = ClassificationHead(input_dim=512, target_dim=self.num_classes)
 
+        # Construct last so shared baseline weights keep the same seeded init.
+        if spatial_enhancement == "hco":
+            self.hco_adapter = ResidualHeatConduction(dim=512, grid_size=7)
+
     def train(self, mode=True):
         """Keep the pretrained landmark extractor in inference mode.
 
@@ -295,8 +405,11 @@ class pyramid_trans_expr(nn.Module):
         ###############  image x_ir ([B, 49, 512])
 
         need_spatial_tokens = self.spatial_enhancement == "multiscale"
-        fused = self.pyramid_fuse(x_ir, x_face, return_tokens=need_spatial_tokens)
-        if need_spatial_tokens:
+        fused = self.pyramid_fuse(
+            x_ir, x_face, return_tokens=need_spatial_tokens,
+            image_token_adapter=getattr(self, "hco_adapter", None),
+        )
+        if self.spatial_enhancement == "multiscale":
             y_hat, spatial_tokens = fused
             enhanced_tokens = self.spatial_adaptor(spatial_tokens)
             enhanced_feature = enhanced_tokens.mean(dim=1)

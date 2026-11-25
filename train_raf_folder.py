@@ -57,9 +57,9 @@ def parse_args():
     )
     parser.add_argument(
         "--spatial-enhancement",
-        choices=["none", "multiscale"],
+        choices=["none", "multiscale", "hco"],
         default="none",
-        help="Optional multi-scale dilated-convolution adaptor after pyramid_fuse.",
+        help="Optional spatial adaptor: multiscale or DCT-based HCO (requires --readout-type local).",
     )
     parser.add_argument(
         "--loss-type",
@@ -613,6 +613,7 @@ def main():
         "head_type": args.head_type,
         "readout_type": args.readout_type,
         "loss_type": args.loss_type,
+        "spatial_enhancement": args.spatial_enhancement,
         "otpns_ema_decay": args.otpns_ema_decay,
         "data_root": str(data_root),
         "balanced_sampler": args.balanced_sampler,
