@@ -89,6 +89,60 @@ class CosFaceClassificationHead(nn.Module):
         return cosine * self.scale
 
 
+class DiDiCMClassificationHead(nn.Module):
+    """Compact DiDiCM-inspired posterior refinement head.
+
+    The original DiDiCM models a class posterior with a discrete diffusion
+    process. This lightweight variant keeps POSTER's feature extractor intact:
+    a linear classifier produces the initial posterior, then a few learned
+    denoising steps refine class probabilities conditioned on the feature.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        target_dim: int,
+        steps: int = 3,
+        beta_start: float = 0.08,
+        beta_end: float = 0.24,
+    ):
+        super().__init__()
+        if steps < 1:
+            raise ValueError("DiDiCM steps must be at least 1")
+        if not 0.0 < beta_start <= beta_end < 1.0:
+            raise ValueError("DiDiCM beta schedule must satisfy 0 < start <= end < 1")
+        self.steps = steps
+        self.target_dim = target_dim
+        self.base = nn.Linear(input_dim, target_dim)
+        self.feature_norm = nn.LayerNorm(input_dim)
+        self.step_embed = nn.Embedding(steps, input_dim)
+        self.denoisers = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(input_dim + target_dim, input_dim // 2),
+                nn.GELU(),
+                nn.Linear(input_dim // 2, target_dim),
+            )
+            for _ in range(steps)
+        ])
+        betas = torch.linspace(beta_start, beta_end, steps)
+        self.register_buffer("betas", betas)
+
+    def forward(self, x):
+        features = self.feature_norm(x.view(x.size(0), -1))
+        logits = self.base(features)
+        posterior = torch.softmax(logits, dim=-1)
+        uniform = torch.full_like(posterior, 1.0 / self.target_dim)
+
+        for step, denoiser in enumerate(self.denoisers):
+            beta = self.betas[step]
+            noisy_posterior = (1.0 - beta) * posterior + beta * uniform
+            step_features = features + self.step_embed.weight[step].unsqueeze(0)
+            delta = denoiser(torch.cat([step_features, noisy_posterior], dim=-1))
+            posterior = torch.softmax(torch.log(noisy_posterior.clamp_min(1e-6)) + delta, dim=-1)
+
+        return torch.log(posterior.clamp_min(1e-6))
+
+
 class MultiScaleSpatialAdaptor(nn.Module):
     """Lightweight Mamba-Adaptor-style spatial mixer for 7x7 image tokens.
 
@@ -146,7 +200,7 @@ class pyramid_trans_expr(nn.Module):
         spatial_enhancement="none",
     ):
         super().__init__()
-        if head_type not in {"linear", "cosface"}:
+        if head_type not in {"linear", "cosface", "didicm"}:
             raise ValueError(f"Unsupported head type: {head_type}")
         if readout_type not in {"original", "local"}:
             raise ValueError(f"Unsupported readout type: {readout_type}")
@@ -208,6 +262,11 @@ class pyramid_trans_expr(nn.Module):
         self.se_block = SE_block(input_dim=512)
         if head_type == "cosface":
             self.head = CosFaceClassificationHead(
+                input_dim=512,
+                target_dim=self.num_classes,
+            )
+        elif head_type == "didicm":
+            self.head = DiDiCMClassificationHead(
                 input_dim=512,
                 target_dim=self.num_classes,
             )

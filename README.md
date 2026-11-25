@@ -136,7 +136,20 @@ uses an EMA teacher to estimate per-sample confidence, reduce the weight of
 uncertain samples, and dynamically smooth their targets. This is an
 implementation inspired by OTP-NS rather than a full teacher-pool reproduction.
 
-### Local attention with multi-scale spatial enhancement
+### DiDiCM-inspired classification head
+
+Use `--readout-type local --head-type didicm --spatial-enhancement none` in
+either folder trainer to keep the POSTER backbone and local-token readout while
+refining the class posterior with a compact learned denoising head. This is a
+lightweight DiDiCM-inspired adaptation, not a reproduction of the original
+CVPR 2026 method or its full discrete diffusion training objective. Keep the
+same optimizer, loss, data splits, batch size, AMP, TTA and seed as the
+local-attention baseline, and use a fresh output directory.
+
+The earlier local-attention multi-scale spatial experiment remains selectable
+with `--spatial-enhancement multiscale` for controlled comparisons.
+
+### Local attention with multi-scale spatial enhancement (previous experiment)
 
 Use `--readout-type local --spatial-enhancement multiscale --head-type linear`
 in either folder trainer. This replaces the previous part-prototype experiment.

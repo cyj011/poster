@@ -23,7 +23,7 @@ def parse_args():
     parser.add_argument('-c', '--checkpoint', type=str, default=None, help='Pytorch checkpoint file path')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size.')
     parser.add_argument('--modeltype', type=str, default='large', help='small or base or large')
-    parser.add_argument('--head-type', choices=['linear', 'cosface'], default='linear')
+    parser.add_argument('--head-type', choices=['linear', 'cosface', 'didicm'], default='linear')
     parser.add_argument('--readout-type', choices=['original', 'local'], default='original')
     parser.add_argument('--spatial-enhancement', choices=['none', 'multiscale'], default='none')
     parser.add_argument('--workers', default=2, type=int, help='Number of data loading workers (default: 4)')

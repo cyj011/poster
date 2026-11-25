@@ -6,7 +6,11 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from models.emotion_hyp import MultiScaleSpatialAdaptor, pyramid_trans_expr
+from models.emotion_hyp import (
+    DiDiCMClassificationHead,
+    MultiScaleSpatialAdaptor,
+    pyramid_trans_expr,
+)
 from models.hyp_crossvit import HyVisionTransformer
 
 
@@ -36,6 +40,15 @@ class SpatialAdaptorTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(tokens.grad).all())
         trainable_grads = [p.grad for p in adaptor.parameters() if p.requires_grad]
         self.assertTrue(all(g is not None and torch.isfinite(g).all() for g in trainable_grads))
+
+    def test_didicm_head_shape_gradient_and_posterior(self):
+        head = DiDiCMClassificationHead(input_dim=32, target_dim=8, steps=3)
+        features = torch.randn(4, 32, requires_grad=True)
+        logits = head(features)
+        self.assertEqual(logits.shape, (4, 8))
+        torch.nn.functional.cross_entropy(logits, torch.tensor([0, 1, 2, 3])).backward()
+        self.assertTrue(torch.isfinite(features.grad).all())
+        self.assertTrue(all(p.grad is not None for p in head.parameters()))
 
     def test_rejects_non_grid_token_count(self):
         adaptor = MultiScaleSpatialAdaptor(input_dim=32)
@@ -77,6 +90,22 @@ class SpatialAdaptorTests(unittest.TestCase):
         self.assertEqual(logits.shape, (2, 8))
         self.assertEqual(features.shape, (2, 512))
         self.assertEqual(model.pyramid_fuse.local_token_readout, True)
+
+    def test_poster_stub_interface_with_didicm_head(self):
+        from unittest.mock import patch
+
+        with patch("models.emotion_hyp.MobileFaceNet", return_value=FakeLandmarks()), \
+             patch("models.emotion_hyp.Backbone", return_value=FakeBackbone()), \
+             patch("models.emotion_hyp.torch.load", return_value={"state_dict": {}}):
+            model = pyramid_trans_expr(
+                type="small",
+                num_classes=8,
+                head_type="didicm",
+                readout_type="local",
+            )
+        logits, features = model(torch.randn(2, 3, 224, 224))
+        self.assertEqual(logits.shape, (2, 8))
+        self.assertEqual(features.shape, (2, 512))
 
 
 if __name__ == "__main__":

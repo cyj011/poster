@@ -41,9 +41,9 @@ def parse_args():
     parser.add_argument("--modeltype", choices=["small", "base", "large"], default="large")
     parser.add_argument(
         "--head-type",
-        choices=["linear", "cosface"],
+        choices=["linear", "cosface", "didicm"],
         default="linear",
-        help="Classifier head.",
+        help="Classifier head; didicm enables lightweight discrete-posterior refinement.",
     )
     parser.add_argument(
         "--readout-type",
