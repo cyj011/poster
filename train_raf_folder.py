@@ -57,9 +57,9 @@ def parse_args():
     )
     parser.add_argument(
         "--spatial-enhancement",
-        choices=["none", "multiscale", "hco"],
+        choices=["none", "multiscale", "hco", "ncssd"],
         default="none",
-        help="Optional spatial adaptor: multiscale or DCT-based HCO (requires --readout-type local).",
+        help="Optional spatial adaptor: multiscale, DCT-HCO, or non-causal SSD (requires local readout).",
     )
     parser.add_argument(
         "--loss-type",

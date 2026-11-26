@@ -9,7 +9,11 @@ from torch import nn
 from torch.nn import functional as F
 
 from data_preprocessing.sam import SAM
-from models.emotion_hyp import HeatConductionOperator, pyramid_trans_expr
+from models.emotion_hyp import (
+    HeatConductionOperator,
+    NonCausalSSDAdapter,
+    pyramid_trans_expr,
+)
 from models.hyp_crossvit import HyVisionTransformer
 from test_spatial_adaptor import FakeBackbone, FakeLandmarks
 
@@ -153,6 +157,36 @@ class HCOTests(unittest.TestCase):
     def test_hco_requires_local_readout(self):
         with self.assertRaisesRegex(ValueError, "requires --readout-type local"):
             pyramid_trans_expr(spatial_enhancement="hco")
+
+    def test_ncssd_global_mixing_and_gradients(self):
+        adapter = NonCausalSSDAdapter(dim=16, state_dim=4).eval()
+        tokens = torch.randn(2, 49, 16, requires_grad=True)
+        output = adapter(tokens)
+        self.assertEqual(output.shape, tokens.shape)
+        output.square().mean().backward()
+        self.assertTrue(torch.isfinite(tokens.grad).all())
+        self.assertTrue(all(
+            p.grad is not None and torch.isfinite(p.grad).all()
+            for p in adapter.parameters()
+        ))
+
+        changed = tokens.detach().clone()
+        changed[:, 0] += 1.0
+        with torch.no_grad():
+            delta = (adapter(changed)[:, 1:] - adapter(tokens.detach())[:, 1:]).abs()
+        self.assertGreater(delta.max().item(), 0.0)
+
+    def test_ncssd_poster_interface(self):
+        with patch("models.emotion_hyp.MobileFaceNet", return_value=FakeLandmarks()), \
+             patch("models.emotion_hyp.Backbone", return_value=FakeBackbone()), \
+             patch("models.emotion_hyp.torch.load", return_value={"state_dict": {}}):
+            model = pyramid_trans_expr(
+                type="small", num_classes=7, head_type="linear",
+                readout_type="local", spatial_enhancement="ncssd",
+            )
+        logits, features = model(torch.randn(2, 3, 224, 224))
+        self.assertEqual(logits.shape, (2, 7))
+        self.assertEqual(features.shape, (2, 512))
 
 
 if __name__ == "__main__":

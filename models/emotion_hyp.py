@@ -293,6 +293,63 @@ class ResidualHeatConduction(nn.Module):
         return tokens + self.scale * self.op(tokens)
 
 
+class NonCausalSSDAdapter(nn.Module):
+    """Compact NC-SSD-style global state mixer for image tokens.
+
+    Each spatial token contributes to one shared state, and each token reads
+    from that state. It follows the NC-SSD factorization, without causal scans.
+    """
+
+    def __init__(self, dim=512, state_dim=16, local_kernel=3):
+        super().__init__()
+        if dim < 1 or state_dim < 1 or local_kernel % 2 == 0:
+            raise ValueError("dim/state_dim must be positive and local_kernel must be odd")
+        self.dim = dim
+        self.state_dim = state_dim
+        self.norm = nn.LayerNorm(dim)
+        self.local_conv = nn.Conv2d(
+            dim, dim, kernel_size=local_kernel,
+            padding=local_kernel // 2, groups=dim,
+        )
+        self.to_x = nn.Linear(dim, dim, bias=False)
+        self.to_b = nn.Linear(dim, state_dim)
+        self.to_c = nn.Linear(dim, state_dim)
+        self.to_m = nn.Linear(dim, 1)
+        self.to_gate = nn.Linear(dim, dim)
+        self.global_readout = nn.Linear(dim, dim, bias=False)
+        self.out_norm = nn.LayerNorm(dim)
+        self.out_proj = nn.Linear(dim, dim)
+        self.scale = nn.Parameter(torch.full((dim,), 1e-3))
+
+    def forward(self, tokens):
+        if tokens.ndim != 3 or tokens.shape[-1] != self.dim:
+            raise ValueError(f"NonCausalSSDAdapter expects [B, N, {self.dim}]")
+        batch, count, channels = tokens.shape
+        height = int(count ** 0.5)
+        if height * height != count:
+            raise ValueError("NonCausalSSDAdapter expects a square token grid")
+
+        normalized = self.norm(tokens)
+        local = normalized.transpose(1, 2).reshape(batch, channels, height, height)
+        local = self.local_conv(local).flatten(2).transpose(1, 2)
+        x = self.to_x(local)
+        b = F.softmax(self.to_b(local).float(), dim=1).to(local.dtype)
+        c = F.softmax(self.to_c(local).float(), dim=-1).to(local.dtype)
+        m = torch.sigmoid(self.to_m(local))
+
+        # NC-SSD: H = (B * m)^T X, Y = C H. The state is shared by all
+        # spatial positions, so a changed token can influence every output.
+        state = torch.einsum("bln,bld->bnd", b * m, x)
+        mixed = torch.einsum("bln,bnd->bld", c, state)
+        # Keep an explicit shared-state path. This avoids the global signal
+        # being completely removed by the per-token normalization/gate path.
+        global_state = state.mean(dim=1, keepdim=True)
+        global_update = self.global_readout(global_state).expand(-1, count, -1)
+        update = self.out_proj(self.out_norm(mixed) * F.silu(self.to_gate(local)))
+        update = update + global_update
+        return tokens + self.scale * update
+
+
 class pyramid_trans_expr(nn.Module):
     def __init__(
         self,
@@ -308,10 +365,13 @@ class pyramid_trans_expr(nn.Module):
             raise ValueError(f"Unsupported head type: {head_type}")
         if readout_type not in {"original", "local"}:
             raise ValueError(f"Unsupported readout type: {readout_type}")
-        if spatial_enhancement not in {"none", "multiscale", "hco"}:
+        if spatial_enhancement not in {"none", "multiscale", "hco", "ncssd"}:
             raise ValueError(f"Unsupported spatial enhancement: {spatial_enhancement}")
-        if spatial_enhancement == "hco" and readout_type != "local":
-            raise ValueError("HCO requires --readout-type local to read enhanced image tokens")
+        if spatial_enhancement in {"hco", "ncssd"} and readout_type != "local":
+            raise ValueError(
+                f"{spatial_enhancement.upper()} requires --readout-type local "
+                "to read enhanced image tokens"
+            )
         self.head_type = head_type
         self.readout_type = readout_type
         self.spatial_enhancement = spatial_enhancement
@@ -382,6 +442,8 @@ class pyramid_trans_expr(nn.Module):
         # Construct last so shared baseline weights keep the same seeded init.
         if spatial_enhancement == "hco":
             self.hco_adapter = ResidualHeatConduction(dim=512, grid_size=7)
+        elif spatial_enhancement == "ncssd":
+            self.ncssd_adapter = NonCausalSSDAdapter(dim=512, state_dim=16)
 
     def train(self, mode=True):
         """Keep the pretrained landmark extractor in inference mode.
@@ -407,7 +469,9 @@ class pyramid_trans_expr(nn.Module):
         need_spatial_tokens = self.spatial_enhancement == "multiscale"
         fused = self.pyramid_fuse(
             x_ir, x_face, return_tokens=need_spatial_tokens,
-            image_token_adapter=getattr(self, "hco_adapter", None),
+            image_token_adapter=getattr(
+                self, "hco_adapter", getattr(self, "ncssd_adapter", None)
+            ),
         )
         if self.spatial_enhancement == "multiscale":
             y_hat, spatial_tokens = fused

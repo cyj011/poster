@@ -25,7 +25,7 @@ def parse_args():
     parser.add_argument('--modeltype', type=str, default='large', help='small or base or large')
     parser.add_argument('--head-type', choices=['linear', 'cosface', 'didicm'], default='linear')
     parser.add_argument('--readout-type', choices=['original', 'local'], default='original')
-    parser.add_argument('--spatial-enhancement', choices=['none', 'multiscale', 'hco'], default='none')
+    parser.add_argument('--spatial-enhancement', choices=['none', 'multiscale', 'hco', 'ncssd'], default='none')
     parser.add_argument('--workers', default=2, type=int, help='Number of data loading workers (default: 4)')
     parser.add_argument('--gpu', type=str, default='0', help='assign multi-gpus by comma concat')
     parser.add_argument('-p', '--plot_cm', action="store_true", help="Ploting confusion matrix.")
