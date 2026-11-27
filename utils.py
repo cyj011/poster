@@ -62,6 +62,41 @@ def otpns_style_loss(
     return (per_sample_loss * sample_weight).sum() / sample_weight.sum().clamp_min(1e-6)
 
 
+def supervised_contrastive_loss(
+    features: Tensor,
+    labels: Tensor,
+    temperature: float = 0.07,
+) -> Tensor:
+    """Supervised contrastive loss for same-class facial features.
+
+    Anchors without another sample of the same class are ignored, which keeps
+    the loss well-defined for small or highly imbalanced batches.
+    """
+    if features.ndim != 2:
+        features = features.flatten(1)
+    if labels.ndim != 1 or features.size(0) != labels.size(0):
+        raise ValueError("features and labels must have matching batch dimensions")
+    if temperature <= 0:
+        raise ValueError("temperature must be positive")
+
+    normalized = F.normalize(features.float(), dim=1)
+    logits = normalized @ normalized.t() / temperature
+    logits = logits - logits.max(dim=1, keepdim=True).values.detach()
+
+    batch = labels.size(0)
+    self_mask = torch.eye(batch, device=labels.device, dtype=torch.bool)
+    positive_mask = labels.unsqueeze(0).eq(labels.unsqueeze(1)) & ~self_mask
+    valid = positive_mask.any(dim=1)
+    if not valid.any():
+        return features.sum() * 0.0
+
+    exp_logits = torch.exp(logits) * (~self_mask).to(logits.dtype)
+    log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True).clamp_min(1e-12))
+    positive_count = positive_mask.sum(dim=1).clamp_min(1)
+    mean_log_prob_pos = (positive_mask.to(log_prob.dtype) * log_prob).sum(dim=1) / positive_count
+    return -mean_log_prob_pos[valid].mean()
+
+
 def convert_label_to_similarity(normed_feature: Tensor, label: Tensor) -> Tuple[Tensor, Tensor]:
     similarity_matrix = normed_feature @ normed_feature.transpose(1, 0)
     label_matrix = label.unsqueeze(1) == label.unsqueeze(0)

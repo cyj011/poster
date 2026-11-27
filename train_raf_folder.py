@@ -63,10 +63,12 @@ def parse_args():
     )
     parser.add_argument(
         "--loss-type",
-        choices=["baseline", "otpns"],
+        choices=["baseline", "otpns", "supcon"],
         default="baseline",
-        help="Training loss; otpns enables EMA-teacher sample weighting and dynamic smoothing.",
+        help="Training loss; supcon adds supervised contrastive feature learning.",
     )
+    parser.add_argument("--supcon-weight", type=float, default=0.10)
+    parser.add_argument("--supcon-temperature", type=float, default=0.07)
     parser.add_argument(
         "--otpns-ema-decay",
         type=float,
@@ -140,6 +142,7 @@ from utils import (
     LabelSmoothingCrossEntropy,
     make_ema_teacher,
     otpns_style_loss,
+    supervised_contrastive_loss,
     update_ema_teacher,
 )
 
@@ -256,6 +259,8 @@ def save_checkpoint(
         "spatial_enhancement": args.spatial_enhancement,
         "loss_type": args.loss_type,
         "otpns_ema_decay": args.otpns_ema_decay,
+        "supcon_weight": args.supcon_weight,
+        "supcon_temperature": args.supcon_temperature,
         "teacher_state_dict": teacher_model.state_dict() if teacher_model is not None else None,
         "amp": args.amp,
         "tta": args.tta,
@@ -385,6 +390,10 @@ def main():
         amp_enabled = False
     ce_criterion = torch.nn.CrossEntropyLoss()
     lsce_criterion = LabelSmoothingCrossEntropy(smoothing=0.2)
+    if args.supcon_weight < 0:
+        raise ValueError("--supcon-weight must be non-negative")
+    if args.supcon_temperature <= 0:
+        raise ValueError("--supcon-temperature must be positive")
 
     print(f"Using device: {device}")
     if device.type == "cuda":
@@ -399,6 +408,11 @@ def main():
     print(f"Classifier head: {args.head_type}")
     print(f"Feature readout: {args.readout_type}")
     print(f"Training loss: {args.loss_type}")
+    if args.loss_type == "supcon":
+        print(
+            f"SupCon weight: {args.supcon_weight}, "
+            f"temperature: {args.supcon_temperature}"
+        )
     print(f"Spatial enhancement: {args.spatial_enhancement}")
     if teacher_model is not None:
         print(f"OTP-NS-style EMA decay: {args.otpns_ema_decay}")
@@ -501,12 +515,17 @@ def main():
                 dtype=torch.bfloat16,
                 enabled=amp_enabled,
             ):
-                outputs, _ = model(images, targets)
+                outputs, features = model(images, targets)
                 if teacher_logits is None:
-                    loss = (
+                    classification_loss = (
                         ce_criterion(outputs, targets)
                         + 2.0 * lsce_criterion(outputs, targets)
                     )
+                    loss = classification_loss
+                    if args.loss_type == "supcon":
+                        loss = loss + args.supcon_weight * supervised_contrastive_loss(
+                            features, targets, args.supcon_temperature
+                        )
                 else:
                     loss = otpns_style_loss(outputs, teacher_logits, targets)
             loss.backward()
@@ -517,12 +536,17 @@ def main():
                 dtype=torch.bfloat16,
                 enabled=amp_enabled,
             ):
-                outputs, _ = model(images, targets)
+                outputs, features = model(images, targets)
                 if teacher_logits is None:
-                    loss = (
+                    classification_loss = (
                         ce_criterion(outputs, targets)
                         + 2.0 * lsce_criterion(outputs, targets)
                     )
+                    loss = classification_loss
+                    if args.loss_type == "supcon":
+                        loss = loss + args.supcon_weight * supervised_contrastive_loss(
+                            features, targets, args.supcon_temperature
+                        )
                 else:
                     loss = otpns_style_loss(outputs, teacher_logits, targets)
             loss.backward()

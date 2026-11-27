@@ -13,6 +13,7 @@ from models.emotion_hyp import (
     pyramid_trans_expr,
 )
 from models.hyp_crossvit import HyVisionTransformer
+from utils import supervised_contrastive_loss
 
 
 class FakeLandmarks(nn.Module):
@@ -50,6 +51,22 @@ class SpatialAdaptorTests(unittest.TestCase):
         torch.nn.functional.cross_entropy(logits, torch.tensor([0, 1, 2, 3])).backward()
         self.assertTrue(torch.isfinite(features.grad).all())
         self.assertTrue(all(p.grad is not None for p in head.parameters()))
+
+    def test_supervised_contrastive_loss_gradient_and_singletons(self):
+        features = torch.randn(6, 16, requires_grad=True)
+        labels = torch.tensor([0, 0, 1, 1, 2, 2])
+        loss = supervised_contrastive_loss(features, labels)
+        self.assertTrue(torch.isfinite(loss))
+        loss.backward()
+        self.assertTrue(torch.isfinite(features.grad).all())
+
+        singleton_features = torch.randn(3, 16, requires_grad=True)
+        singleton_loss = supervised_contrastive_loss(
+            singleton_features, torch.tensor([0, 1, 2])
+        )
+        self.assertEqual(singleton_loss.item(), 0.0)
+        singleton_loss.backward()
+        self.assertTrue(torch.isfinite(singleton_features.grad).all())
 
     def test_hco_shape_and_gradients(self):
         hco = HeatConductionOperator(dim=32, grid_size=7, fve_dim=8)
